@@ -1,0 +1,96 @@
+:root {
+  --primary-color: #4f46e5;
+  --gradient-start: #4f46e5;
+  --gradient-end: #7c3aed;
+  --background-light: #f5f7fb;
+  --text-color: #1f2933;
+  --muted-text: #6b7280;
+}
+
+body {
+  font-family: "Montserrat", sans-serif;
+  background: linear-gradient(180deg, rgba(245, 247, 251, 0.8), rgba(255, 255, 255, 0.9));
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  color: var(--text-color);
+}
+
+.navbar .brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.navbar .brand-name {
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+.hero-section {
+  padding-top: 5rem;
+  padding-bottom: 5rem;
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.glass-card {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(12px);
+  border-radius: 20px;
+  box-shadow: 0 20px 45px rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+.icon-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+  background: rgba(79, 70, 229, 0.12);
+  color: var(--primary-color);
+  font-size: 1.3rem;
+}
+
+.section-light {
+  background: var(--background-light);
+  min-height: calc(100vh - 180px);
+}
+
+footer {
+  margin-top: auto;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+button.btn-primary {
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+  border: none;
+}
+
+button.btn-primary:hover {
+  background: linear-gradient(135deg, var(--gradient-end), var(--gradient-start));
+}
+
+.btn-outline-primary {
+  color: var(--primary-color);
+  border-color: rgba(79, 70, 229, 0.4);
+}
+
+.btn-outline-primary:hover {
+  background: var(--primary-color);
+  color: #fff;
+}

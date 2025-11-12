@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}UniBiblio · Главное меню{% endblock %}
+
+{% block content %}
+<section class="hero-section py-5">
+  <div class="container">
+    <div class="row align-items-center">
+      <div class="col-md-7 mb-4 mb-md-0">
+        <h1 class="display-5 fw-bold text-gradient">UniBiblio</h1>
+        <p class="lead text-muted">Цифровая библиотека университета с умным поиском по учебным материалам. Начните с простого шага — перейдите к скрипту поиска книг.</p>
+        <a href="{{ url_for('search') }}" class="btn btn-primary btn-lg mt-3">Скрипт поиска книг</a>
+      </div>
+      <div class="col-md-5">
+        <div class="glass-card p-4">
+          <h2 class="h4 fw-semibold mb-3">Что дальше?</h2>
+          <ul class="list-unstyled mb-0">
+            <li class="d-flex align-items-start mb-3">
+              <span class="icon-circle me-3">🌐</span>
+              <div>
+                <h3 class="h6 fw-semibold mb-1">Поиск литературы</h3>
+                <p class="mb-0 text-muted">Подберите оптимальные учебники под дисциплины для семестра.</p>
+              </div>
+            </li>
+            <li class="d-flex align-items-start mb-3">
+              <span class="icon-circle me-3">📚</span>
+              <div>
+                <h3 class="h6 fw-semibold mb-1">Индивидуальные наборы</h3>
+                <p class="mb-0 text-muted">Система подготовит списки литературы по выбранным предметам.</p>
+              </div>
+            </li>
+            <li class="d-flex align-items-start">
+              <span class="icon-circle me-3">✨</span>
+              <div>
+                <h3 class="h6 fw-semibold mb-1">Готовность к будущему</h3>
+                <p class="mb-0 text-muted">Скоро появится автоматическая аналитика и рекомендации.</p>
+              </div>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% endblock %}

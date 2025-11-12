@@ -1,0 +1,595 @@
+{% extends "base.html" %}
+
+{% block title %}UniBiblio · Скрипт поиска книг{% endblock %}
+
+{% block content %}
+<section class="section-light py-5">
+  <div class="container">
+    <div class="row justify-content-center">
+      <div class="col-lg-8">
+        <div class="glass-card p-4 p-md-5">
+          <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
+            <div>
+              <h1 class="h3 fw-bold mb-2">Скрипт поиска книг</h1>
+              <p class="text-muted mb-0">Загрузите файлы с основной книгой и списком предметов, чтобы продолжить подбор литературы.</p>
+            </div>
+            <a href="{{ url_for('home') }}" class="btn btn-outline-primary">← На главную</a>
+          </div>
+          <form class="row g-4" id="process-form" action="{{ url_for('process') }}" method="post" enctype="multipart/form-data">
+            <div class="col-12">
+              <label for="ood_file" class="form-label fw-semibold">Файл ООД (куда добавляем)</label>
+              <input class="form-control form-control-lg" type="file" id="ood_file" name="ood_file" accept=".xlsx,.xls" required>
+              <div class="form-text">Excel ООД. Начиная с 136 строки будет добавлена запись с нумерацией и предметом.</div>
+            </div>
+            <div class="col-12">
+              <label for="up_file" class="form-label fw-semibold">Файл 33-УП (источник C/D)</label>
+              <input class="form-control form-control-lg" type="file" id="up_file" name="up_file" accept=".xlsx,.xls" required>
+              <div class="form-text">Будут объединены столбцы C и D (через "/") для предмета.</div>
+            </div>
+            <div class="col-12 text-end">
+              <button type="submit" id="submit-btn" class="btn btn-primary btn-lg">Обработать</button>
+            </div>
+          </form>
+          <div class="mt-4">
+            <div class="d-flex align-items-center gap-2 mb-3">
+              <span class="status-dot status-pending" id="global-status"></span>
+              <h2 class="h5 fw-semibold mb-0">Статус обработки</h2>
+            </div>
+            <div class="table-responsive status-table-wrapper">
+              <table class="table table-hover status-table" id="results-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Предмет</th>
+                    <th scope="col" class="text-center">Статус</th>
+                    <th scope="col">Ссылка</th>
+                    <th scope="col">Комментарий</th>
+                    <th scope="col" class="text-center">Действия</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="placeholder">
+                    <td colspan="5" class="text-muted text-center py-4">Загрузите файлы и нажмите «Обработать», чтобы увидеть результат.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="mt-3" id="skipped-block" hidden>
+              <h3 class="h6 fw-semibold mb-1">Пропущено</h3>
+              <ul class="list-group" id="skipped-list"></ul>
+            </div>
+            <div class="mt-3 d-flex gap-3 flex-wrap" id="download-block" hidden>
+              <button class="btn btn-success" id="download-btn">Скачать обновлённый ООД</button>
+              <a class="btn btn-outline-secondary" id="refresh-btn" href="#">Очистить таблицу</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+{% block scripts %}
+<script>
+  const form = document.getElementById('process-form');
+  const submitBtn = document.getElementById('submit-btn');
+  const downloadBlock = document.getElementById('download-block');
+  const downloadBtn = document.getElementById('download-btn');
+  const refreshBtn = document.getElementById('refresh-btn');
+  const resultsTable = document.querySelector('#results-table tbody');
+  const globalStatus = document.getElementById('global-status');
+  const skippedBlock = document.getElementById('skipped-block');
+  const skippedList = document.getElementById('skipped-list');
+  let lastFile = null;
+
+  const STATUS_LABELS = {
+    success: 'Готово',
+    warning: 'Проверить',
+    error: 'Ошибка',
+    pending: 'В процессе'
+  };
+
+  function setGlobalStatus(status) {
+    globalStatus.className = 'status-dot';
+    globalStatus.classList.add(`status-${status}`);
+  }
+
+  function clearResults() {
+    resultsTable.innerHTML = '';
+    const placeholder = document.createElement('tr');
+    placeholder.classList.add('placeholder');
+    placeholder.innerHTML = '<td colspan="5" class="text-muted text-center py-4">Обработка ещё не запускалась.</td>';
+    resultsTable.appendChild(placeholder);
+    skippedList.innerHTML = '';
+    skippedBlock.hidden = true;
+    downloadBlock.hidden = true;
+    lastFile = null;
+    setGlobalStatus('pending');
+  }
+
+  function createStatusCell(status) {
+    const cell = document.createElement('td');
+    cell.classList.add('text-center');
+    const badge = document.createElement('span');
+    badge.classList.add('status-dot', `status-${status}`);
+    badge.title = STATUS_LABELS[status] || status;
+    cell.appendChild(badge);
+    const label = document.createElement('span');
+    label.classList.add('status-label');
+    label.textContent = STATUS_LABELS[status] || status;
+    cell.appendChild(label);
+    return cell;
+  }
+
+  function setProcessingState() {
+    resultsTable.innerHTML = '';
+    const row = document.createElement('tr');
+    row.classList.add('status-processing');
+    row.innerHTML = '<td colspan="5" class="text-center py-4"><span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>Выполняется обработка…</td>';
+    resultsTable.appendChild(row);
+    setGlobalStatus('pending');
+  }
+
+  function buildResultRow(result) {
+    const { subject, status, primary_link: primaryLink, resources = [], links = [], note = '' } = result;
+    const row = document.createElement('tr');
+    row.dataset.subject = subject;
+    row.dataset.status = status;
+    row.dataset.primaryLink = primaryLink || '';
+
+    const subjectCell = document.createElement('td');
+    subjectCell.textContent = subject;
+    row.appendChild(subjectCell);
+
+    row.appendChild(createStatusCell(status || 'warning'));
+
+    const linkCell = document.createElement('td');
+    if (resources.length) {
+      const list = document.createElement('ul');
+      list.className = 'resource-list list-unstyled mb-0';
+      resources.forEach((resource) => {
+        const item = document.createElement('li');
+        item.className = 'resource-item mb-2';
+        const anchor = document.createElement('a');
+        anchor.href = resource.url;
+        anchor.target = '_blank';
+        anchor.rel = 'noopener';
+        anchor.textContent = resource.title || resource.url;
+        item.appendChild(anchor);
+        if (resource.note) {
+          const noteText = document.createElement('div');
+          noteText.className = 'small text-muted';
+          noteText.textContent = resource.note;
+          item.appendChild(noteText);
+        }
+        list.appendChild(item);
+      });
+      linkCell.appendChild(list);
+    } else if (primaryLink) {
+      const anchor = document.createElement('a');
+      anchor.href = primaryLink;
+      anchor.target = '_blank';
+      anchor.rel = 'noopener';
+      anchor.textContent = 'Открыть';
+      linkCell.appendChild(anchor);
+      if (links.length > 1) {
+        const extra = document.createElement('div');
+        extra.className = 'small text-muted mt-2';
+        extra.textContent = `Дополнительно: ${links.length - 1}`;
+        linkCell.appendChild(extra);
+      }
+    } else {
+      linkCell.innerHTML = '<span class="text-muted">Нет ссылки</span>';
+    }
+    row.appendChild(linkCell);
+
+    const noteCell = document.createElement('td');
+    noteCell.textContent = note || '';
+    row.appendChild(noteCell);
+
+    const actionsCell = document.createElement('td');
+    actionsCell.classList.add('text-center');
+    const replaceBtn = document.createElement('button');
+    replaceBtn.type = 'button';
+    replaceBtn.className = 'btn btn-sm btn-outline-primary me-2';
+    replaceBtn.textContent = 'Заменить';
+    replaceBtn.addEventListener('click', () => {
+      if (primaryLink) {
+        window.open(primaryLink, '_blank');
+      }
+      row.classList.remove('row-skipped');
+      row.classList.add('row-replace');
+    });
+
+    const skipBtn = document.createElement('button');
+    skipBtn.type = 'button';
+    skipBtn.className = 'btn btn-sm btn-outline-danger';
+    skipBtn.textContent = 'Пропустить';
+    skipBtn.addEventListener('click', () => {
+      row.classList.toggle('row-skipped');
+    });
+
+    actionsCell.appendChild(replaceBtn);
+    actionsCell.appendChild(skipBtn);
+    row.appendChild(actionsCell);
+
+    return row;
+  }
+
+  function renderResults(results = []) {
+    resultsTable.innerHTML = '';
+    if (!results.length) {
+      const row = document.createElement('tr');
+      row.innerHTML = '<td colspan="5" class="text-muted text-center py-4">Нет новых предметов для добавления.</td>';
+      resultsTable.appendChild(row);
+      return;
+    }
+
+    results.forEach((result) => {
+      const row = buildResultRow(result);
+      resultsTable.appendChild(row);
+    });
+  }
+
+  function renderSkipped(skipped = []) {
+    skippedList.innerHTML = '';
+    if (!skipped.length) {
+      skippedBlock.hidden = true;
+      return;
+    }
+    skippedBlock.hidden = false;
+    skipped.forEach(({ subject, reason }) => {
+      const item = document.createElement('li');
+      item.className = 'list-group-item d-flex justify-content-between align-items-start';
+      item.innerHTML = `<span>${subject}</span><span class="badge bg-secondary-subtle text-dark">${reason}</span>`;
+      skippedList.appendChild(item);
+    });
+  }
+
+  function determineGlobalStatus(results) {
+    if (!results.length) return 'warning';
+    if (results.some((r) => r.status === 'error')) return 'error';
+    if (results.some((r) => r.status === 'warning')) return 'warning';
+    return 'success';
+  }
+
+  function processFiles() {
+    const oodFile = document.getElementById('ood_file');
+    const upFile = document.getElementById('up_file');
+    
+    const formData = new FormData();
+    formData.append('ood_file', oodFile.files[0]);
+    formData.append('up_file', upFile.files[0]);
+
+    resultsTable.innerHTML = '';
+    setGlobalStatus('pending');
+
+    fetch('/process', {
+      method: 'POST',
+      body: formData
+    }).then(response => {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      function readStream() {
+        return reader.read().then(({ done, value }) => {
+          if (done) return;
+          
+          const chunk = decoder.decode(value);
+          const lines = chunk.split('\n');
+          
+          lines.forEach(line => {
+            if (line.startsWith('data: ')) {
+              try {
+                const data = JSON.parse(line.slice(6));
+                handleStreamData(data);
+              } catch (e) {
+                console.error('Parse error:', e);
+              }
+            }
+          });
+          
+          return readStream();
+        });
+      }
+      
+      return readStream();
+    });
+  }
+
+  const subjectRows = new Map();
+
+  function handleStreamData(data) {
+    if (data.type === 'subject_start') {
+      // Add subject row with pending status
+      const row = document.createElement('tr');
+      row.dataset.subject = data.subject;
+      
+      const subjectCell = document.createElement('td');
+      subjectCell.textContent = data.subject;
+      row.appendChild(subjectCell);
+      
+      row.appendChild(createStatusCell('pending'));
+      
+      const linkCell = document.createElement('td');
+      linkCell.textContent = 'Обработка...';
+      row.appendChild(linkCell);
+      
+      const noteCell = document.createElement('td');
+      noteCell.textContent = '';
+      row.appendChild(noteCell);
+      
+      const actionCell = document.createElement('td');
+      row.appendChild(actionCell);
+      
+      resultsTable.appendChild(row);
+      subjectRows.set(data.subject, row);
+      
+    } else if (data.type === 'subject_done') {
+      // Update subject row with results
+      const row = subjectRows.get(data.subject);
+      if (row) {
+        const result = { subject: data.subject, ...data.info };
+        updateResultRow(row, result);
+      }
+      
+    } else if (data.type === 'complete') {
+      // Process completion
+      const { skipped = [], file_data, filename } = data;
+      displaySkipped(skipped);
+      
+      if (file_data && filename) {
+        lastFile = { data: file_data, name: filename };
+        downloadBlock.hidden = false;
+      }
+      
+      setGlobalStatus('success');
+    }
+  }
+
+  function updateResultRow(row, result) {
+    const { status, primary_link: primaryLink, resources = [], links = [], note = '' } = result;
+    
+    // Update status
+    const statusCell = row.children[1];
+    statusCell.innerHTML = '';
+    statusCell.appendChild(createStatusCell(status || 'warning').firstChild);
+    statusCell.appendChild(createStatusCell(status || 'warning').lastChild);
+    
+    // Update links
+    const linkCell = row.children[2];
+    linkCell.innerHTML = '';
+    if (resources.length) {
+      const list = document.createElement('ul');
+      list.className = 'resource-list list-unstyled mb-0';
+      resources.forEach((resource) => {
+        const item = document.createElement('li');
+        item.className = 'mb-2 p-2 border rounded';
+        
+        // Определяем тип ресурса по URL
+        let resourceType = 'Неизвестный источник';
+        let badgeClass = 'bg-secondary';
+        if (resource.url.includes('urait.ru')) {
+          resourceType = 'Юрайт';
+          badgeClass = 'bg-primary';
+        } else if (resource.url.includes('iprbookshop.ru')) {
+          resourceType = 'IPRbooks';
+          badgeClass = 'bg-success';
+        } else if (resource.url.includes('rmebrk.kz')) {
+          resourceType = 'RMEBRK';
+          badgeClass = 'bg-warning';
+        }
+        
+        // Бейдж с типом ресурса
+        const badge = document.createElement('span');
+        badge.className = `badge ${badgeClass} me-2`;
+        badge.textContent = resourceType;
+        item.appendChild(badge);
+        
+        // Ссылка на книгу
+        const link = document.createElement('a');
+        link.href = resource.url;
+        link.target = '_blank';
+        link.textContent = resource.title || resource.url;
+        link.className = 'text-decoration-none fw-semibold';
+        item.appendChild(link);
+        
+        // Комментарий для каждого ресурса
+        if (resource.note) {
+          const noteDiv = document.createElement('div');
+          noteDiv.className = 'text-muted small mt-1';
+          noteDiv.textContent = resource.note;
+          item.appendChild(noteDiv);
+        }
+        
+        // Кнопки действий для каждого ресурса
+        const buttonGroup = document.createElement('div');
+        buttonGroup.className = 'mt-2';
+        
+        const openBtn = document.createElement('a');
+        openBtn.href = resource.url;
+        openBtn.target = '_blank';
+        openBtn.className = 'btn btn-sm btn-outline-primary me-1';
+        openBtn.textContent = 'Читать';
+        buttonGroup.appendChild(openBtn);
+        
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'btn btn-sm btn-outline-secondary me-1';
+        copyBtn.textContent = 'Копировать';
+        copyBtn.onclick = () => {
+          navigator.clipboard.writeText(resource.url);
+          copyBtn.textContent = 'Скопировано!';
+          setTimeout(() => copyBtn.textContent = 'Копировать', 2000);
+        };
+        buttonGroup.appendChild(copyBtn);
+        
+        // Кнопки замены для каждого ресурса
+        const replaceBtn = document.createElement('button');
+        replaceBtn.className = 'btn btn-sm btn-outline-warning me-1';
+        replaceBtn.textContent = 'Следующий';
+        replaceBtn.onclick = () => getNextResource(result.subject, resource, item);
+        buttonGroup.appendChild(replaceBtn);
+        
+        const skipBtn = document.createElement('button');
+        skipBtn.className = 'btn btn-sm btn-outline-danger';
+        skipBtn.textContent = 'Пропустить';
+        skipBtn.onclick = () => skipResource(result.subject, resource);
+        buttonGroup.appendChild(skipBtn);
+        
+        item.appendChild(buttonGroup);
+        list.appendChild(item);
+      });
+      linkCell.appendChild(list);
+    } else {
+      linkCell.textContent = 'Не найдено';
+    }
+    
+    // Update note
+    const noteCell = row.children[3];
+    noteCell.textContent = note;
+    
+    // Update action buttons
+    const actionCell = row.children[4];
+    actionCell.innerHTML = '';
+    if (primaryLink) {
+      const openBtn = document.createElement('a');
+      openBtn.href = primaryLink;
+      openBtn.target = '_blank';
+      openBtn.className = 'btn btn-sm btn-outline-primary me-1';
+      openBtn.textContent = 'Открыть';
+      actionCell.appendChild(openBtn);
+    }
+    
+    const replaceBtn = document.createElement('button');
+    replaceBtn.className = 'btn btn-sm btn-outline-secondary me-1';
+    replaceBtn.textContent = 'Заменить';
+    replaceBtn.onclick = () => replaceSubject(result.subject);
+    actionCell.appendChild(replaceBtn);
+    
+    const skipBtn = document.createElement('button');
+    skipBtn.className = 'btn btn-sm btn-outline-warning';
+    skipBtn.textContent = 'Пропустить';
+    skipBtn.onclick = () => skipSubject(result.subject);
+    actionCell.appendChild(skipBtn);
+  }
+
+  function getNextResource(subject, currentResource, itemElement) {
+    console.log('Получить следующий ресурс:', subject, currentResource);
+    
+    // Показываем индикатор загрузки
+    const replaceBtn = itemElement.querySelector('.btn-outline-warning');
+    const originalText = replaceBtn.textContent;
+    replaceBtn.textContent = 'Загрузка...';
+    replaceBtn.disabled = true;
+    
+    fetch('/get_next_resource', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subject: subject,
+        current_url: currentResource.url,
+        source: currentResource.source
+      })
+    })
+    .then(response => response.json())
+    .then(data => {
+      if (data.status === 'success') {
+        // Заменяем содержимое карточки новым ресурсом
+        updateResourceItem(itemElement, data.resource, subject);
+      } else if (data.status === 'no_more') {
+        alert('Больше вариантов нет');
+        replaceBtn.textContent = 'Нет вариантов';
+        replaceBtn.disabled = true;
+      } else {
+        alert('Ошибка: ' + data.message);
+        replaceBtn.textContent = originalText;
+        replaceBtn.disabled = false;
+      }
+    })
+    .catch(error => {
+      console.error('Ошибка запроса следующего ресурса:', error);
+      alert('Ошибка сети');
+      replaceBtn.textContent = originalText;
+      replaceBtn.disabled = false;
+    });
+  }
+
+  function updateResourceItem(itemElement, newResource, subject) {
+    // Обновляем содержимое карточки ресурса
+    const link = itemElement.querySelector('a');
+    link.href = newResource.url;
+    link.textContent = newResource.title;
+    
+    const noteDiv = itemElement.querySelector('.text-muted');
+    if (noteDiv) {
+      noteDiv.textContent = newResource.note;
+    }
+    
+    // Обновляем кнопки с новым ресурсом
+    const replaceBtn = itemElement.querySelector('.btn-outline-warning');
+    replaceBtn.textContent = 'Следующий';
+    replaceBtn.disabled = false;
+    replaceBtn.onclick = () => getNextResource(subject, newResource, itemElement);
+    
+    const openBtn = itemElement.querySelector('.btn-outline-primary');
+    openBtn.href = newResource.url;
+    
+    const copyBtn = itemElement.querySelector('.btn-outline-secondary');
+    copyBtn.onclick = () => {
+      navigator.clipboard.writeText(newResource.url);
+      copyBtn.textContent = 'Скопировано!';
+      setTimeout(() => copyBtn.textContent = 'Копировать', 2000);
+    };
+  }
+
+  function skipResource(subject, resource) {
+    console.log('Пропустить ресурс:', subject, resource);
+    // Скрываем этот ресурс
+    const resourceItems = document.querySelectorAll(`[data-subject="${subject}"] .resource-list li`);
+    resourceItems.forEach(item => {
+      const link = item.querySelector('a');
+      if (link && link.href === resource.url) {
+        item.style.display = 'none';
+      }
+    });
+  }
+
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    setProcessingState();
+    submitBtn.disabled = true;
+    downloadBlock.hidden = true;
+
+    processFiles();
+
+    try {
+      // No need to fetch data here, it's handled by EventSource
+    } catch (err) {
+      resultsTable.innerHTML = `<tr><td colspan="5" class="text-danger text-center py-4">Ошибка отправки: ${err.message}</td></tr>`;
+      setGlobalStatus('error');
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  refreshBtn.addEventListener('click', (event) => {
+    event.preventDefault();
+    clearResults();
+  });
+
+  downloadBtn.addEventListener('click', () => {
+    if (!lastFile) {
+      return;
+    }
+    const link = document.createElement('a');
+    link.href = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${lastFile.data}`;
+    link.download = lastFile.name;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  });
+
+  clearResults();
+</script>
+{% endblock %}
+{% endblock %}
