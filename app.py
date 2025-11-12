@@ -8,7 +8,7 @@ from copy import copy as shallow_copy
 from threading import Lock
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from flask import Flask, render_template, url_for, request, jsonify
 from openpyxl import load_workbook
 from openpyxl.cell import Cell
@@ -362,17 +362,26 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
         # Ищем результаты поиска
         book_elements = soup.select('div.row.row-book')
         print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
-        
+
         # Если не нашли стандартные элементы, попробуем другие селекторы
         if not book_elements:
             book_elements = soup.select('.book-item, .search-result, .publication')
             print(f"[DEBUG] IPRbooks альтернативный поиск найдено: {len(book_elements)}")
-        
+
         if not book_elements:
-            print("[DEBUG] IPRbooks: результаты не найдены")
-            # Сохраняем HTML для отладки (первые 1000 символов)
-            print(f"[DEBUG] IPRbooks: HTML содержимое (начало): {response.text[:1000]}")
-            return None
+            if results_container:
+                container_attrs = {k: v for k, v in results_container.attrs.items() if k not in ("class",)}
+                print(f"[DEBUG] IPRbooks: атрибуты контейнера: {container_attrs}")
+                container_html = results_container.prettify()[:800].replace('\n', ' ').strip()
+                print(f"[DEBUG] IPRbooks: контейнер HTML: {container_html}")
+
+            ajax_results = fetch_iprbookshop_ajax_results(session, subject, base_url)
+            if ajax_results:
+                book_elements = ajax_results
+            else:
+                print("[DEBUG] IPRbooks: результаты не найдены")
+                print(f"[DEBUG] IPRbooks: HTML содержимое (начало): {response.text[:1000]}")
+                return None
         
         # Применяем скоринг для выбора лучшей книги
         best_book = None
@@ -525,6 +534,63 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
 
 
 # Функция get_first_iprbookshop_result больше не нужна, так как основная функция теперь использует requests
+
+
+def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base_url: str) -> List[Tag]:
+    """Повторяет AJAX-запрос /107257, который делает фронтенд IPR SMART"""
+    ajax_url = urljoin(base_url, "107257")
+    params = {"page": 1}
+    payload = {
+        "action": "getPublications",
+        "search_type": 1,
+        "pagetitle": subject,
+        "available": 1,
+    }
+    headers = {
+        "Referer": urljoin(base_url, "586.html"),
+        "Origin": base_url.rstrip("/"),
+        "X-Requested-With": "XMLHttpRequest",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+    }
+
+    try:
+        response = session.post(ajax_url, params=params, data=payload, headers=headers, timeout=15)
+        print(f"[DEBUG] IPRbooks AJAX: статус {response.status_code}, url {response.url}")
+
+        if response.status_code != 200:
+            print(f"[DEBUG] IPRbooks AJAX: неожиданный статус {response.status_code}")
+            return []
+
+        data = response.json()
+        if not data:
+            print("[DEBUG] IPRbooks AJAX: пустой JSON")
+            return []
+
+        if data.get("success") is False:
+            print(f"[DEBUG] IPRbooks AJAX: отказ сервера — {data.get('message')}")
+            return []
+
+        book_elements: List[Tag] = []
+        for item in data.get("data") or []:
+            if not item:
+                continue
+            snippet_soup = BeautifulSoup(item, "html.parser")
+            div = snippet_soup.select_one('div.row.row-book')
+            if div:
+                book_elements.append(div)
+
+        print(f"[DEBUG] IPRbooks AJAX: получено элементов {len(book_elements)}")
+        return book_elements
+
+    except requests.exceptions.RequestException as exc:
+        print(f"[DEBUG] IPRbooks AJAX: ошибка запроса {exc}")
+        return []
+    except ValueError as exc:
+        print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга JSON {exc}")
+        return []
+    except Exception as exc:
+        print(f"[DEBUG] IPRbooks AJAX: неожиданная ошибка {exc}")
+        return []
 
 
 def get_multiple_iprbookshop_results(page, subject: str, results_count: int, max_results: int = 10) -> List[Dict[str, Any]]:
