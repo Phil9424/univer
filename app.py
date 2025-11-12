@@ -335,6 +335,12 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
             print(f"[DEBUG] IPRbooks: неожиданный статус {response.status_code}")
             return None
 
+        preview_text = response.text[:800].replace('\n', ' ').strip()
+        print(f"[DEBUG] IPRbooks: превью HTML: {preview_text}")
+        if not preview_text:
+            print("[DEBUG] IPRbooks: тело ответа пустое")
+            return None
+
         if "auth" in response.url.lower() or "login" in response.url.lower():
             print("[DEBUG] IPRbooks: перенаправление на авторизацию")
             return None
@@ -453,6 +459,8 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
             detail_response = session.get(detail_url, headers=detail_headers, timeout=15)
             
             if detail_response.status_code == 200:
+                detail_preview = detail_response.text[:600].replace('\n', ' ').strip()
+                print(f"[DEBUG] IPRbooks: превью страницы книги: {detail_preview}")
                 detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
                 
                 # Ищем кнопку "Читать" с разными селекторами
