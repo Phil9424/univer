@@ -279,10 +279,14 @@
           lines.forEach(line => {
             if (line.startsWith('data: ')) {
               try {
-                const data = JSON.parse(line.slice(6));
-                handleStreamData(data);
+                const jsonStr = line.slice(6).trim();
+                if (jsonStr) {
+                  const data = JSON.parse(jsonStr);
+                  handleStreamData(data);
+                }
               } catch (e) {
                 console.error('Parse error:', e);
+                console.error('Problematic line:', line);
               }
             }
           });

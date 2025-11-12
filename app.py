@@ -773,6 +773,22 @@ def normalize_subject(value: str) -> str:
     return value.strip().lower()
 
 
+def clean_data_for_json(data):
+    """Очищает данные от проблемных символов для JSON"""
+    if isinstance(data, dict):
+        return {k: clean_data_for_json(v) for k, v in data.items()}
+    elif isinstance(data, list):
+        return [clean_data_for_json(item) for item in data]
+    elif isinstance(data, str):
+        # Удаляем или заменяем проблемные символы
+        cleaned = data.replace('\x00', '').replace('\r', '').replace('\n', ' ')
+        # Удаляем другие управляющие символы
+        cleaned = ''.join(char for char in cleaned if ord(char) >= 32 or char in '\t\n\r')
+        return cleaned
+    else:
+        return data
+
+
 @app.route("/process", methods=["POST"])
 def process():
     return process_streaming()
@@ -895,7 +911,7 @@ def process_streaming():
         
         # Send initial subjects list
         for subject in pending_subjects:
-            yield f"data: {json.dumps({'type': 'subject_start', 'subject': subject})}\n\n"
+            yield f"data: {json.dumps({'type': 'subject_start', 'subject': subject}, ensure_ascii=False, separators=(',', ':'))}\n\n"
         
         link_results: Dict[str, Dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -905,8 +921,12 @@ def process_streaming():
                 try:
                     subject, info = future.result()
                     link_results[subject] = info
+                    
+                    # Clean data to prevent JSON parsing errors
+                    cleaned_info = clean_data_for_json(info)
+                    
                     # Escape JSON properly to avoid parse errors
-                    json_data = json.dumps({'type': 'subject_done', 'subject': subject, 'info': info}, ensure_ascii=False)
+                    json_data = json.dumps({'type': 'subject_done', 'subject': subject, 'info': cleaned_info}, ensure_ascii=False, separators=(',', ':'))
                     yield f"data: {json_data}\n\n"
                 except Exception as exc:
                     fallback_info = {
@@ -917,7 +937,7 @@ def process_streaming():
                         "resources": []
                     }
                     link_results[subject_key] = fallback_info
-                    json_data = json.dumps({'type': 'subject_done', 'subject': subject_key, 'info': fallback_info}, ensure_ascii=False)
+                    json_data = json.dumps({'type': 'subject_done', 'subject': subject_key, 'info': fallback_info}, ensure_ascii=False, separators=(',', ':'))
                     yield f"data: {json_data}\n\n"
 
         # Generate final file
@@ -935,7 +955,7 @@ def process_streaming():
             "file_data": base64.b64encode(output.getvalue()).decode("utf-8"),
             "filename": "updated_ood.xlsx",
         }
-        yield f"data: {json.dumps(final_data)}\n\n"
+        yield f"data: {json.dumps(final_data, ensure_ascii=False, separators=(',', ':'))}\n\n"
     
     from flask import Response
     return Response(generate(), mimetype='text/event-stream')
