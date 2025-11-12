@@ -13,14 +13,17 @@ from flask import Flask, render_template, url_for, request, jsonify
 from openpyxl import load_workbook
 from openpyxl.cell import Cell
 
+# Playwright imports (optional, теперь не обязательно для IPRbooks)
 try:
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
-
     PLAYWRIGHT_AVAILABLE = True
-except ModuleNotFoundError:
-    sync_playwright = None  # type: ignore
-    PlaywrightTimeoutError = Exception  # type: ignore
+    PLAYWRIGHT_LOCK = Lock()
+except ImportError:
+    print("[INFO] Playwright не установлен. Используется requests для IPRbooks поиска.")
+    sync_playwright = None
+    PlaywrightTimeoutError = Exception
     PLAYWRIGHT_AVAILABLE = False
+    PLAYWRIGHT_LOCK = None
 
 BANNED_SUBSTRINGS = (
     "иностран",
@@ -282,306 +285,149 @@ def iprbookshop_search_url(query: str) -> str:
 
 
 def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
-    if not PLAYWRIGHT_AVAILABLE or sync_playwright is None or PLAYWRIGHT_LOCK is None:
-        return None
-
-    base_url = "https://www.iprbookshop.ru/"
-    search_url = urljoin(base_url, "586.html")
-
-    with PLAYWRIGHT_LOCK:
-        try:
-            with sync_playwright() as pw:  # type: ignore[call-arg]
-                browser = pw.chromium.launch(headless=True, slow_mo=100)  # Скрытый режим для продакшена
-                context = browser.new_context()
-                page = context.new_page()
-                page.set_default_timeout(10000)
-
-                page.goto(search_url, wait_until="domcontentloaded")
-                if "auth" in page.url.lower():
-                    return None
-
-                search_input = page.locator("input#pagetitle")
-                if not search_input.count():
-                    return None
-
-                search_input.fill(subject)
-                
-                # Добавляем отладочную информацию
-                print(f"[DEBUG] Поиск '{subject}' на IPRbooks")
-                print(f"[DEBUG] URL: {page.url}")
-                
-                # Пробуем разные методы нажатия кнопки с повторными попытками
-                button_clicked = False
-                
-                # Метод 1: Точная кнопка "Применить" - пробуем 10 раз
-                if not button_clicked:
-                    for attempt in range(1, 11):
-                        try:
-                            submit_button = page.locator("input[type='submit'][value='Применить']")
-                            if submit_button.count():
-                                print(f"[DEBUG] Метод 1, попытка {attempt}: Нажимаем кнопку 'Применить'...")
-                                submit_button.click(timeout=2000)
-                                page.wait_for_timeout(500)  # Ждем немного после клика
-                                
-                                # Проверяем, изменился ли URL или появились результаты
-                                current_url = page.url
-                                if "search" in current_url.lower() or page.locator("#ajaxContentBooks").count():
-                                    button_clicked = True
-                                    print(f"[DEBUG] Метод 1, попытка {attempt}: УСПЕХ!")
-                                    break
-                                else:
-                                    print(f"[DEBUG] Метод 1, попытка {attempt}: Клик не сработал, пробуем еще...")
-                        except Exception as e:
-                            print(f"[DEBUG] Метод 1, попытка {attempt}: НЕУДАЧА - {e}")
-                        
-                        if attempt < 10:
-                            page.wait_for_timeout(300)  # Пауза между попытками
-                
-                # Метод 2: Любая submit кнопка - пробуем 10 раз
-                if not button_clicked:
-                    for attempt in range(1, 11):
-                        try:
-                            submit_button = page.locator("input[type='submit']").first
-                            if submit_button.count():
-                                print(f"[DEBUG] Метод 2, попытка {attempt}: Нажимаем любую submit кнопку...")
-                                submit_button.click(timeout=2000)
-                                page.wait_for_timeout(500)
-                                
-                                current_url = page.url
-                                if "search" in current_url.lower() or page.locator("#ajaxContentBooks").count():
-                                    button_clicked = True
-                                    print(f"[DEBUG] Метод 2, попытка {attempt}: УСПЕХ!")
-                                    break
-                        except Exception as e:
-                            print(f"[DEBUG] Метод 2, попытка {attempt}: НЕУДАЧА - {e}")
-                        
-                        if attempt < 10:
-                            page.wait_for_timeout(300)
-                
-                # Метод 3: Enter на поле поиска - пробуем 10 раз
-                if not button_clicked:
-                    for attempt in range(1, 11):
-                        try:
-                            print(f"[DEBUG] Метод 3, попытка {attempt}: Нажимаем Enter на поле поиска...")
-                            search_input.press("Enter")
-                            page.wait_for_timeout(500)
-                            
-                            current_url = page.url
-                            if "search" in current_url.lower() or page.locator("#ajaxContentBooks").count():
-                                button_clicked = True
-                                print(f"[DEBUG] Метод 3, попытка {attempt}: УСПЕХ!")
-                                break
-                        except Exception as e:
-                            print(f"[DEBUG] Метод 3, попытка {attempt}: НЕУДАЧА - {e}")
-                        
-                        if attempt < 10:
-                            page.wait_for_timeout(300)
-                
-                # Метод 4: JavaScript клик - пробуем 10 раз
-                if not button_clicked:
-                    for attempt in range(1, 11):
-                        try:
-                            print(f"[DEBUG] Метод 4, попытка {attempt}: JavaScript клик на submit...")
-                            page.evaluate("document.querySelector('input[type=\"submit\"]').click()")
-                            page.wait_for_timeout(500)
-                            
-                            current_url = page.url
-                            if "search" in current_url.lower() or page.locator("#ajaxContentBooks").count():
-                                button_clicked = True
-                                print(f"[DEBUG] Метод 4, попытка {attempt}: УСПЕХ!")
-                                break
-                        except Exception as e:
-                            print(f"[DEBUG] Метод 4, попытка {attempt}: НЕУДАЧА - {e}")
-                        
-                        if attempt < 10:
-                            page.wait_for_timeout(300)
-                
-                # Метод 5: JavaScript submit формы - пробуем 10 раз
-                if not button_clicked:
-                    for attempt in range(1, 11):
-                        try:
-                            print(f"[DEBUG] Метод 5, попытка {attempt}: JavaScript submit формы...")
-                            page.evaluate("document.querySelector('form').submit()")
-                            page.wait_for_timeout(500)
-                            
-                            current_url = page.url
-                            if "search" in current_url.lower() or page.locator("#ajaxContentBooks").count():
-                                button_clicked = True
-                                print(f"[DEBUG] Метод 5, попытка {attempt}: УСПЕХ!")
-                                break
-                        except Exception as e:
-                            print(f"[DEBUG] Метод 5, попытка {attempt}: НЕУДАЧА - {e}")
-                        
-                        if attempt < 10:
-                            page.wait_for_timeout(300)
-                
-                if not button_clicked:
-                    print("[DEBUG] ВСЕ МЕТОДЫ НЕУДАЧНЫ! Кнопка не нажата.")
-                    # Короткая пауза для отладки
-                    page.wait_for_timeout(1000)
-                    return None
-
-                print("[DEBUG] Ждем загрузки результатов...")
-                # Быстрая загрузка для продакшена
-                page.wait_for_timeout(1000)
-                
-                try:
-                    page.wait_for_selector("#ajaxContentBooks", timeout=8000)
-                    print("[DEBUG] Контейнер результатов загружен")
-                except PlaywrightTimeoutError:
-                    print("[DEBUG] Контейнер результатов не загрузился, ждем еще...")
-                    page.wait_for_timeout(1000)
-
-                results_count = 0
-                try:
-                    results_count = page.eval_on_selector_all("div.row.row-book", "nodes => nodes.length") or 0
-                    print(f"[DEBUG] Найдено результатов: {results_count}")
-                except PlaywrightTimeoutError:
-                    print("[DEBUG] Ошибка подсчета результатов (timeout)")
-                    results_count = 0
-                except Exception as e:
-                    print(f"[DEBUG] Ошибка подсчета результатов: {e}")
-                    results_count = 0
-
-                if results_count == 0:
-                    print("[DEBUG] Результатов не найдено")
-                    # Добавим паузу чтобы увидеть что происходит
-                    page.wait_for_timeout(3000)
-                    return None
-
-                # Try to find the best matching book by title similarity
-                best_book = None
-                best_score = 0
-                subject_lower = subject.lower()
-                subject_words = subject_lower.split()
-                
-                books = page.locator("div.row.row-book")
-                
-                # Analyze first 5 books to find the best match
-                for i in range(min(results_count, 5)):
-                    try:
-                        book = books.nth(i)
-                        title_element = book.locator("h4 a")
-                        if title_element.count():
-                            title_text = title_element.inner_text().strip()
-                            title_lower = title_text.lower()
-                            
-                            # Calculate score based on matching words
-                            score = 0
-                            matched_words = 0
-                            
-                            for word in subject_words:
-                                if len(word) > 2 and word in title_lower:
-                                    score += 1
-                                    matched_words += 1
-                            
-                            # Bonus points for exact phrase matches
-                            if subject_lower in title_lower:
-                                score += 5
-                            
-                            # Require at least 50% word match for non-exact matches
-                            if matched_words < len(subject_words) * 0.5 and subject_lower not in title_lower:
-                                score = -10
-                            
-                            # Strong penalty for automation books when not searching for automation
-                            automation_words = ["автоматизация", "автоматизированный", "automation", "автомат", "машиностроение"]
-                            automation_in_title = any(word in title_lower for word in automation_words)
-                            automation_in_subject = any(word in subject_lower for word in ["автомат", "машин", "производств"])
-                            
-                            if automation_in_title and not automation_in_subject:
-                                score = -20  # Very strong penalty
-                            
-                            if score > best_score:
-                                best_score = score
-                                best_book = book
-                    except Exception:
-                        continue
-                
-                # Если не нашли хорошую книгу, возвращаем первый вариант из списка
-                if best_book is None or best_score < 0:
-                    print("[DEBUG] IPRbooks: не найдено подходящих книг, возвращаем первый из списка")
-                    return get_first_iprbookshop_result(page, subject, results_count)
-                        
-                title_element = best_book.locator("h4 a")
-                detail_href = title_element.get_attribute("href")
-                title_text = title_element.inner_text().strip() if title_element.count() else subject
-                if not detail_href or detail_href.startswith("javascript"):
-                    return None
-
-                detail_url = urljoin(base_url, detail_href)
-                page.goto(detail_url, wait_until="domcontentloaded")
-                if "auth" in page.url.lower():
-                    return None
-
-                reader_locator = page.locator("a.btn-read").first
-                try:
-                    reader_href = reader_locator.get_attribute("href")
-                except PlaywrightTimeoutError:
-                    reader_href = None
-                if not reader_href:
-                    return None
-
-                reader_url = urljoin(detail_url, reader_href)
-
-                note_parts: List[str] = []
-                try:
-                    note_parts = page.eval_on_selector_all(
-                        "div.pub-data",
-                        "nodes => nodes.slice(0, 4).map(n => n.innerText.trim()).filter(Boolean)",
-                    ) or []
-                except Exception:
-                    note_parts = []
-
-                if not note_parts:
-                    note_parts = ["Читать на IPRbooks"]
-
-                return {
-                    "title": title_text,
-                    "url": reader_url,
-                    "status": "success",
-                    "note": "; ".join(note_parts),
-                    "source": "iprbookshop",
-                    "multiple": False
-                }
-        except PlaywrightTimeoutError:
-            return None
-        except Exception:
-            return None
-
-
-def get_first_iprbookshop_result(page, subject: str, results_count: int) -> Dict[str, Any]:
-    """Получает первый результат с IPRbooks"""
-    print(f"[DEBUG] IPRbooks: берем первый результат из {results_count}")
-    
-    base_url = "https://www.iprbookshop.ru/"
-    books = page.locator("div.row.row-book")
+    """Поиск на IPRbooks через requests для совместимости с Vercel"""
+    print(f"[DEBUG] IPRbooks поиск через requests: '{subject}'")
     
     try:
-        book = books.first
-        title_element = book.locator("h4 a")
-        if not title_element.count():
-            return None
-            
-        title_text = title_element.inner_text().strip()
-        detail_href = title_element.get_attribute("href")
+        # Используем requests вместо Playwright для Vercel
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        })
         
-        if not detail_href or detail_href.startswith("javascript"):
+        # Поиск на IPRbooks
+        search_url = "https://www.iprbookshop.ru/586.html"
+        search_data = {
+            'pagetitle': subject,
+            'submit': 'Применить'
+        }
+        
+        response = session.post(search_url, data=search_data, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Ищем результаты поиска
+        book_elements = soup.select('div.row.row-book')
+        print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
+        
+        if not book_elements:
+            print("[DEBUG] IPRbooks: результаты не найдены")
             return None
+        
+        # Применяем скоринг для выбора лучшей книги
+        best_book = None
+        best_score = -100
+        best_element = None
+        
+        for book_elem in book_elements:
+            try:
+                title_link = book_elem.select_one('h4 a')
+                if not title_link:
+                    continue
+                
+                title_text = title_link.get_text(strip=True)
+                title_lower = title_text.lower()
+                subject_lower = subject.lower()
+                
+                # Scoring system for book relevance
+                score = 0
+                
+                # Exact match gets highest score
+                if subject_lower in title_lower:
+                    score += 3
+                
+                # Partial keyword matching
+                subject_words = subject_lower.split()
+                for word in subject_words:
+                    if len(word) > 2 and word in title_lower:
+                        score += 2
+                
+                # Penalty for completely unrelated topics
+                unrelated_words = ["программирование", "информатика", "математика", "физика", "химия"]
+                if any(word in title_lower for word in unrelated_words) and not any(word in subject_lower for word in unrelated_words):
+                    score = -10
+                
+                # Strong penalty for automation books when not searching for automation
+                automation_words = ["автоматизация", "автоматизированный", "automation", "автомат", "машиностроение"]
+                automation_in_title = any(word in title_lower for word in automation_words)
+                automation_in_subject = any(word in subject_lower for word in ["автомат", "машин", "производств"])
+                
+                if automation_in_title and not automation_in_subject:
+                    score = -20  # Very strong penalty
+                
+                if score > best_score:
+                    best_score = score
+                    best_book = title_text
+                    best_element = book_elem
+                    
+            except Exception as e:
+                print(f"[DEBUG] IPRbooks ошибка обработки элемента: {e}")
+                continue
+        
+        # Если не нашли хорошую книгу, берем первую
+        if best_element is None or best_score < 0:
+            print("[DEBUG] IPRbooks: не найдено подходящих книг, берем первую")
+            best_element = book_elements[0]
+            title_link = best_element.select_one('h4 a')
+            if title_link:
+                best_book = title_link.get_text(strip=True)
+        
+        if not best_element:
+            return None
+        
+        # Получаем ссылку на книгу
+        title_link = best_element.select_one('h4 a')
+        if not title_link:
+            return None
+        
+        detail_href = title_link.get('href')
+        if not detail_href or detail_href.startswith('javascript'):
+            return None
+        
+        detail_url = urljoin("https://www.iprbookshop.ru/", detail_href)
+        
+        # Пытаемся получить прямую ссылку для чтения
+        reader_url = detail_url
+        try:
+            detail_response = session.get(detail_url, timeout=5)
+            detail_response.raise_for_status()
+            detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
             
-        detail_url = urljoin(base_url, detail_href)
+            # Ищем кнопку "Читать"
+            read_button = detail_soup.select_one('a.btn-read')
+            if read_button and read_button.get('href'):
+                reader_href = read_button.get('href')
+                reader_url = urljoin(detail_url, reader_href)
+                print(f"[DEBUG] IPRbooks: найдена прямая ссылка для чтения: {reader_url}")
+            
+            # Получаем информацию о публикации
+            note_parts = []
+            pub_data_elements = detail_soup.select('div.pub-data')
+            for elem in pub_data_elements:
+                text = elem.get_text(strip=True)
+                if text:
+                    note_parts.append(text)
+        
+        except Exception as e:
+            print(f"[DEBUG] IPRbooks: не удалось получить детали книги: {e}")
+            note_parts = ["Электронная библиотека с полным доступом к тексту"]
         
         return {
-            "title": title_text,
-            "url": detail_url,
-            "status": "warning", 
-            "note": "IPRbooks - требуется проверка доступности",
+            "url": reader_url,
+            "title": best_book or f"Учебник по предмету: {subject}",
+            "status": "success",
+            "note": "; ".join(note_parts) if note_parts else "Читать на IPRbooks",
             "source": "iprbookshop",
             "multiple": False
         }
         
     except Exception as e:
-        print(f"[DEBUG] IPRbooks ошибка получения первого результата: {e}")
+        print(f"[DEBUG] IPRbooks ошибка поиска: {e}")
         return None
+
+
+# Функция get_first_iprbookshop_result больше не нужна, так как основная функция теперь использует requests
 
 
 def get_multiple_iprbookshop_results(page, subject: str, results_count: int, max_results: int = 10) -> List[Dict[str, Any]]:
