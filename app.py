@@ -602,7 +602,27 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
             for item in data.get("data") or []:
                 if not item:
                     continue
-                snippet_soup = BeautifulSoup(item, "html.parser")
+
+                html_snippet: Optional[str] = None
+
+                if isinstance(item, str):
+                    html_snippet = item
+                elif isinstance(item, (list, tuple)):
+                    for entry in item:
+                        if isinstance(entry, str):
+                            html_snippet = entry
+                            break
+                        if isinstance(entry, dict):
+                            html_snippet = entry.get("html") or entry.get("content")
+                            if html_snippet:
+                                break
+                elif isinstance(item, dict):
+                    html_snippet = item.get("html") or item.get("content")
+
+                if not html_snippet or not isinstance(html_snippet, str):
+                    continue
+
+                snippet_soup = BeautifulSoup(html_snippet, "html.parser")
                 div = snippet_soup.select_one('div.row.row-book')
                 if div:
                     book_elements.append(div)
