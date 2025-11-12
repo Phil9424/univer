@@ -76,6 +76,7 @@
   const refreshBtn = document.getElementById('refresh-btn');
   const resultsTable = document.querySelector('#results-table tbody');
   const globalStatus = document.getElementById('global-status');
+  const globalStatusText = document.getElementById('global-status-text');
   const skippedBlock = document.getElementById('skipped-block');
   const skippedList = document.getElementById('skipped-list');
   let lastFile = null;
@@ -87,9 +88,12 @@
     pending: 'В процессе'
   };
 
-  function setGlobalStatus(status) {
+  function setGlobalStatus(status, message = '') {
     globalStatus.className = 'status-dot';
     globalStatus.classList.add(`status-${status}`);
+    if (globalStatusText) {
+      globalStatusText.textContent = message || STATUS_LABELS[status] || '';
+    }
   }
 
   function clearResults() {
@@ -243,6 +247,9 @@
       skippedList.appendChild(item);
     });
   }
+
+  // Backward compatibility alias
+  const displaySkipped = renderSkipped;
 
   function determineGlobalStatus(results) {
     if (!results.length) return 'warning';
