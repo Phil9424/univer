@@ -289,11 +289,27 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
     print(f"[DEBUG] IPRbooks поиск через requests: '{subject}'")
     
     try:
-        # Используем requests вместо Playwright для Vercel
+        # Используем requests с более реалистичными заголовками для Vercel
         session = requests.Session()
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         })
+        
+        # Сначала получаем главную страницу для установки сессии
+        print(f"[DEBUG] IPRbooks: получаем главную страницу для сессии")
+        main_response = session.get("https://www.iprbookshop.ru/", timeout=15)
+        print(f"[DEBUG] IPRbooks: главная страница - статус {main_response.status_code}")
         
         # Поиск на IPRbooks
         search_url = "https://www.iprbookshop.ru/586.html"
@@ -302,17 +318,46 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
             'submit': 'Применить'
         }
         
-        response = session.post(search_url, data=search_data, timeout=10)
-        response.raise_for_status()
+        print(f"[DEBUG] IPRbooks: отправляем POST запрос с данными: {search_data}")
+        response = session.post(search_url, data=search_data, timeout=15, allow_redirects=True)
+        print(f"[DEBUG] IPRbooks: POST ответ - статус {response.status_code}, URL: {response.url}")
+        
+        if response.status_code != 200:
+            print(f"[DEBUG] IPRbooks: неожиданный статус {response.status_code}")
+            return None
+            
+        # Проверяем, не перенаправили ли нас на страницу авторизации
+        if "auth" in response.url.lower() or "login" in response.url.lower():
+            print(f"[DEBUG] IPRbooks: перенаправление на авторизацию")
+            return None
         
         soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Отладочная информация о содержимом страницы
+        page_title = soup.find('title')
+        print(f"[DEBUG] IPRbooks: заголовок страницы: {page_title.get_text() if page_title else 'Не найден'}")
+        
+        # Проверяем наличие контейнера результатов
+        results_container = soup.find('div', {'id': 'ajaxContentBooks'})
+        if results_container:
+            print(f"[DEBUG] IPRbooks: найден контейнер результатов")
+        else:
+            print(f"[DEBUG] IPRbooks: контейнер результатов не найден")
+            # Попробуем найти результаты без контейнера
         
         # Ищем результаты поиска
         book_elements = soup.select('div.row.row-book')
         print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
         
+        # Если не нашли стандартные элементы, попробуем другие селекторы
+        if not book_elements:
+            book_elements = soup.select('.book-item, .search-result, .publication')
+            print(f"[DEBUG] IPRbooks альтернативный поиск найдено: {len(book_elements)}")
+        
         if not book_elements:
             print("[DEBUG] IPRbooks: результаты не найдены")
+            # Сохраняем HTML для отладки (первые 1000 символов)
+            print(f"[DEBUG] IPRbooks: HTML содержимое (начало): {response.text[:1000]}")
             return None
         
         # Применяем скоринг для выбора лучшей книги
@@ -389,29 +434,55 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
         
         # Пытаемся получить прямую ссылку для чтения
         reader_url = detail_url
+        note_parts = []
+        
         try:
-            detail_response = session.get(detail_url, timeout=5)
-            detail_response.raise_for_status()
-            detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
+            print(f"[DEBUG] IPRbooks: получаем детали книги: {detail_url}")
+            detail_response = session.get(detail_url, timeout=10)
             
-            # Ищем кнопку "Читать"
-            read_button = detail_soup.select_one('a.btn-read')
-            if read_button and read_button.get('href'):
-                reader_href = read_button.get('href')
-                reader_url = urljoin(detail_url, reader_href)
-                print(f"[DEBUG] IPRbooks: найдена прямая ссылка для чтения: {reader_url}")
-            
-            # Получаем информацию о публикации
-            note_parts = []
-            pub_data_elements = detail_soup.select('div.pub-data')
-            for elem in pub_data_elements:
-                text = elem.get_text(strip=True)
-                if text:
-                    note_parts.append(text)
+            if detail_response.status_code == 200:
+                detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
+                
+                # Ищем кнопку "Читать" с разными селекторами
+                read_button = (
+                    detail_soup.select_one('a.btn-read') or
+                    detail_soup.select_one('a[href*="epd-reader"]') or
+                    detail_soup.select_one('a[href*="reader"]') or
+                    detail_soup.select_one('.read-btn') or
+                    detail_soup.select_one('a:contains("Читать")')
+                )
+                
+                if read_button and read_button.get('href'):
+                    reader_href = read_button.get('href')
+                    reader_url = urljoin(detail_url, reader_href)
+                    print(f"[DEBUG] IPRbooks: найдена прямая ссылка для чтения: {reader_url}")
+                else:
+                    print(f"[DEBUG] IPRbooks: кнопка 'Читать' не найдена, используем ссылку на страницу")
+                
+                # Получаем информацию о публикации
+                pub_data_elements = detail_soup.select('div.pub-data, .publication-info, .book-info')
+                for elem in pub_data_elements:
+                    text = elem.get_text(strip=True)
+                    if text and len(text) > 5:  # Игнорируем слишком короткие тексты
+                        note_parts.append(text)
+                
+                if not note_parts:
+                    # Попробуем найти любую полезную информацию
+                    year_elem = detail_soup.select_one('.year, .publication-year')
+                    if year_elem:
+                        note_parts.append(f"Год: {year_elem.get_text(strip=True)}")
+                    
+                    pages_elem = detail_soup.select_one('.pages, .page-count')
+                    if pages_elem:
+                        note_parts.append(f"Страниц: {pages_elem.get_text(strip=True)}")
+            else:
+                print(f"[DEBUG] IPRbooks: ошибка получения деталей - статус {detail_response.status_code}")
         
         except Exception as e:
             print(f"[DEBUG] IPRbooks: не удалось получить детали книги: {e}")
-            note_parts = ["Электронная библиотека с полным доступом к тексту"]
+        
+        if not note_parts:
+            note_parts = ["IPRbooks - Электронная библиотека"]
         
         return {
             "url": reader_url,
@@ -422,8 +493,17 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
             "multiple": False
         }
         
+    except requests.exceptions.Timeout:
+        print(f"[DEBUG] IPRbooks: таймаут соединения")
+        return None
+    except requests.exceptions.ConnectionError:
+        print(f"[DEBUG] IPRbooks: ошибка соединения")
+        return None
+    except requests.exceptions.RequestException as e:
+        print(f"[DEBUG] IPRbooks: ошибка запроса: {e}")
+        return None
     except Exception as e:
-        print(f"[DEBUG] IPRbooks ошибка поиска: {e}")
+        print(f"[DEBUG] IPRbooks: неожиданная ошибка: {e}")
         return None
 
 
@@ -473,11 +553,22 @@ def search_iprbookshop_multiple_results(subject: str, max_results: int = 10) -> 
     print(f"[DEBUG] IPRbooks множественный поиск через requests: '{subject}'")
     
     try:
-        # Используем requests вместо Playwright
+        # Используем requests с теми же заголовками что и в основной функции
         session = requests.Session()
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Cache-Control': 'max-age=0'
         })
+        
+        # Сначала получаем главную страницу
+        main_response = session.get("https://www.iprbookshop.ru/", timeout=15)
+        print(f"[DEBUG] IPRbooks множественный: главная страница - статус {main_response.status_code}")
         
         # Поиск на IPRbooks
         search_url = "https://www.iprbookshop.ru/586.html"
@@ -486,8 +577,12 @@ def search_iprbookshop_multiple_results(subject: str, max_results: int = 10) -> 
             'submit': 'Применить'
         }
         
-        response = session.post(search_url, data=search_data, timeout=10)
-        response.raise_for_status()
+        response = session.post(search_url, data=search_data, timeout=15, allow_redirects=True)
+        print(f"[DEBUG] IPRbooks множественный: POST ответ - статус {response.status_code}")
+        
+        if response.status_code != 200:
+            print(f"[DEBUG] IPRbooks множественный: неожиданный статус {response.status_code}")
+            return []
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
