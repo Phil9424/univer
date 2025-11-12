@@ -781,9 +781,16 @@ def clean_data_for_json(data):
         return [clean_data_for_json(item) for item in data]
     elif isinstance(data, str):
         # Удаляем или заменяем проблемные символы
-        cleaned = data.replace('\x00', '').replace('\r', '').replace('\n', ' ')
-        # Удаляем другие управляющие символы
-        cleaned = ''.join(char for char in cleaned if ord(char) >= 32 or char in '\t\n\r')
+        cleaned = data.replace('\x00', '').replace('\r', ' ').replace('\n', ' ')
+        # Удаляем Unicode BOM и другие невидимые символы
+        cleaned = cleaned.replace('\ufeff', '').replace('\u200b', '').replace('\u00a0', ' ')
+        # Удаляем множественные пробелы
+        import re
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        # Удаляем управляющие символы, оставляя только печатные
+        cleaned = ''.join(char for char in cleaned if ord(char) >= 32 or char in ' \t')
+        # Обрезаем пробелы в начале и конце
+        cleaned = cleaned.strip()
         return cleaned
     else:
         return data
@@ -911,7 +918,8 @@ def process_streaming():
         
         # Send initial subjects list
         for subject in pending_subjects:
-            yield f"data: {json.dumps({'type': 'subject_start', 'subject': subject}, ensure_ascii=False, separators=(',', ':'))}\n\n"
+            cleaned_subject = clean_data_for_json(subject)
+            yield f"data: {json.dumps({'type': 'subject_start', 'subject': cleaned_subject}, ensure_ascii=False, separators=(',', ':'))}\n\n"
         
         link_results: Dict[str, Dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
@@ -926,7 +934,8 @@ def process_streaming():
                     cleaned_info = clean_data_for_json(info)
                     
                     # Escape JSON properly to avoid parse errors
-                    json_data = json.dumps({'type': 'subject_done', 'subject': subject, 'info': cleaned_info}, ensure_ascii=False, separators=(',', ':'))
+                    cleaned_subject = clean_data_for_json(subject)
+                    json_data = json.dumps({'type': 'subject_done', 'subject': cleaned_subject, 'info': cleaned_info}, ensure_ascii=False, separators=(',', ':'))
                     yield f"data: {json_data}\n\n"
                 except Exception as exc:
                     fallback_info = {
@@ -937,7 +946,9 @@ def process_streaming():
                         "resources": []
                     }
                     link_results[subject_key] = fallback_info
-                    json_data = json.dumps({'type': 'subject_done', 'subject': subject_key, 'info': fallback_info}, ensure_ascii=False, separators=(',', ':'))
+                    cleaned_subject_key = clean_data_for_json(subject_key)
+                    cleaned_fallback_info = clean_data_for_json(fallback_info)
+                    json_data = json.dumps({'type': 'subject_done', 'subject': cleaned_subject_key, 'info': cleaned_fallback_info}, ensure_ascii=False, separators=(',', ':'))
                     yield f"data: {json_data}\n\n"
 
         # Generate final file
@@ -947,11 +958,25 @@ def process_streaming():
         wb.save(output)
         output.seek(0)
         
+        # Отправляем результаты частями, чтобы избежать слишком больших JSON
+        chunk_size = 5  # По 5 результатов за раз
+        results_chunks = [results_payload[i:i + chunk_size] for i in range(0, len(results_payload), chunk_size)]
+        
+        for i, chunk in enumerate(results_chunks):
+            chunk_data = {
+                "type": "results_chunk",
+                "chunk_index": i,
+                "total_chunks": len(results_chunks),
+                "results": clean_data_for_json(chunk)
+            }
+            yield f"data: {json.dumps(chunk_data, ensure_ascii=False, separators=(',', ':'))}\n\n"
+        
+        # Отправляем финальные данные без больших массивов
         final_data = {
             "type": "complete",
             "status": "ok",
-            "results": results_payload,
-            "skipped": skipped_subjects,
+            "total_results": len(results_payload),
+            "skipped": clean_data_for_json(skipped_subjects),
             "file_data": base64.b64encode(output.getvalue()).decode("utf-8"),
             "filename": "updated_ood.xlsx",
         }

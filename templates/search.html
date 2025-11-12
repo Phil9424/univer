@@ -269,12 +269,18 @@
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       
+      let buffer = '';
+      
       function readStream() {
         return reader.read().then(({ done, value }) => {
           if (done) return;
           
           const chunk = decoder.decode(value);
-          const lines = chunk.split('\n');
+          buffer += chunk;
+          
+          // Обрабатываем полные строки
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Сохраняем неполную строку в буфере
           
           lines.forEach(line => {
             if (line.startsWith('data: ')) {
@@ -287,6 +293,13 @@
               } catch (e) {
                 console.error('Parse error:', e);
                 console.error('Problematic line:', line);
+                console.error('Line length:', line.length);
+                // Попробуем обработать как неполный JSON
+                if (jsonStr.endsWith('}') || jsonStr.endsWith(']')) {
+                  console.log('Trying to parse as complete JSON...');
+                } else {
+                  console.log('Incomplete JSON detected, waiting for more data...');
+                }
               }
             }
           });
@@ -300,6 +313,7 @@
   }
 
   const subjectRows = new Map();
+  let allResults = [];
 
   function handleStreamData(data) {
     if (data.type === 'subject_start') {
@@ -335,9 +349,21 @@
         updateResultRow(row, result);
       }
       
+    } else if (data.type === 'results_chunk') {
+      // Accumulate chunked results (used for summary / debug)
+      if (Array.isArray(data.results)) {
+        allResults = allResults.concat(data.results);
+      }
+
+      const progress = data.total_chunks
+        ? Math.round(((data.chunk_index + 1) / data.total_chunks) * 100)
+        : 100;
+      setGlobalStatus('processing', `Загрузка результатов: ${progress}%`);
+
     } else if (data.type === 'complete') {
       // Process completion
-      const { skipped = [], file_data, filename } = data;
+      const { skipped = [], file_data, filename, total_results = allResults.length } = data;
+      console.log(`Всего результатов получено: ${total_results}`);
       displaySkipped(skipped);
       
       if (file_data && filename) {
