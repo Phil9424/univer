@@ -109,6 +109,21 @@ KNOWN_RESOURCE_RULES = [
     },
 ]
 
+IPRBOOKSHOP_COOKIES = {
+    ".iprbookshop.ru": {
+        "_ym_d": "1762763770",
+        "_ym_uid": "1762763770129598589",
+    },
+    "www.iprbookshop.ru": {
+        "privacy-policy": "1",
+        "read-vzu": "1",
+        "SN4f61b1c8b1bd0": "4sqmd0q49i06iilh542hr77d57",
+    },
+    ".www.iprbookshop.ru": {
+        "IPRSMARTLogin": "89eafbcebab37c937a067ad7671a26b9%7C0a31eb43929401ec874925b9091c4ba6",
+    },
+}
+
 app = Flask(__name__)
 
 
@@ -305,6 +320,11 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
             'Sec-Fetch-User': '?1',
             'Cache-Control': 'max-age=0'
         })
+
+        # Загружаем предоставленные cookies для авторизованного доступа
+        for domain, cookies in IPRBOOKSHOP_COOKIES.items():
+            for name, value in cookies.items():
+                session.cookies.set(name, value, domain=domain, path="/")
         
         base_url = "https://www.iprbookshop.ru/"
         search_url = urljoin(base_url, "586.html")
@@ -540,11 +560,9 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
     """Повторяет AJAX-запрос /107257, который делает фронтенд IPR SMART"""
     ajax_url = urljoin(base_url, "107257")
     params = {"page": 1}
-    payload = {
+    base_payload = {
         "action": "getPublications",
-        "search_type": 1,
         "pagetitle": subject,
-        "available": 1,
     }
     headers = {
         "Referer": urljoin(base_url, "586.html"),
@@ -553,34 +571,48 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
         "Accept": "application/json, text/javascript, */*; q=0.01",
     }
 
+    search_variants = [
+        {"search_type": 1, "available": 1},
+        {"search_type": 2, "available": 1},
+        {"search_type": 1, "available": 2},
+        {"search_type": 2, "available": 2},
+    ]
+
     try:
-        response = session.post(ajax_url, params=params, data=payload, headers=headers, timeout=15)
-        print(f"[DEBUG] IPRbooks AJAX: статус {response.status_code}, url {response.url}")
+        for variant in search_variants:
+            payload = {**base_payload, **variant}
+            print(f"[DEBUG] IPRbooks AJAX: попытка с параметрами {payload}")
+            response = session.post(ajax_url, params=params, data=payload, headers=headers, timeout=15)
+            print(f"[DEBUG] IPRbooks AJAX: статус {response.status_code}, url {response.url}")
 
-        if response.status_code != 200:
-            print(f"[DEBUG] IPRbooks AJAX: неожиданный статус {response.status_code}")
-            return []
-
-        data = response.json()
-        if not data:
-            print("[DEBUG] IPRbooks AJAX: пустой JSON")
-            return []
-
-        if data.get("success") is False:
-            print(f"[DEBUG] IPRbooks AJAX: отказ сервера — {data.get('message')}")
-            return []
-
-        book_elements: List[Tag] = []
-        for item in data.get("data") or []:
-            if not item:
+            if response.status_code != 200:
+                print(f"[DEBUG] IPRbooks AJAX: неожиданный статус {response.status_code}")
                 continue
-            snippet_soup = BeautifulSoup(item, "html.parser")
-            div = snippet_soup.select_one('div.row.row-book')
-            if div:
-                book_elements.append(div)
 
-        print(f"[DEBUG] IPRbooks AJAX: получено элементов {len(book_elements)}")
-        return book_elements
+            data = response.json()
+            if not data:
+                print("[DEBUG] IPRbooks AJAX: пустой JSON")
+                continue
+
+            if data.get("success") is False:
+                print(f"[DEBUG] IPRbooks AJAX: отказ сервера — {data.get('message')}")
+                continue
+
+            book_elements: List[Tag] = []
+            for item in data.get("data") or []:
+                if not item:
+                    continue
+                snippet_soup = BeautifulSoup(item, "html.parser")
+                div = snippet_soup.select_one('div.row.row-book')
+                if div:
+                    book_elements.append(div)
+
+            if book_elements:
+                print(f"[DEBUG] IPRbooks AJAX: получено элементов {len(book_elements)}")
+                return book_elements
+
+        print("[DEBUG] IPRbooks AJAX: не удалось получить данные через API")
+        return []
 
     except requests.exceptions.RequestException as exc:
         print(f"[DEBUG] IPRbooks AJAX: ошибка запроса {exc}")
