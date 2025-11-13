@@ -389,16 +389,44 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
             page_title = soup.find('title')
             print(f"[DEBUG] IPRbooks: заголовок страницы: {page_title.get_text() if page_title else 'Не найден'}")
             
-            # Ищем результаты поиска
+            # Проверяем наличие контейнера результатов (может быть пустым, если загружается через AJAX)
+            results_container = soup.find('div', {'id': 'ajaxContentBooks'})
+            if results_container:
+                container_html_preview = results_container.prettify()[:500].replace('\n', ' ').strip()
+                print(f"[DEBUG] IPRbooks: контейнер ajaxContentBooks найден, содержимое: {container_html_preview}")
+            
+            # Ищем результаты поиска - пробуем разные селекторы
             book_elements = soup.select('div.row.row-book')
-            print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
+            print(f"[DEBUG] IPRbooks: div.row.row-book найдено: {len(book_elements)}")
 
             # Если не нашли стандартные элементы, пробуем другие селекторы
             if not book_elements:
-                book_elements = soup.select('.book-item, .search-result, .publication')
-                print(f"[DEBUG] IPRbooks альтернативный поиск найдено: {len(book_elements)}")
+                book_elements = soup.select('.book-item, .search-result, .publication, .row-book')
+                print(f"[DEBUG] IPRbooks: альтернативные селекторы найдено: {len(book_elements)}")
+            
+            # Пробуем найти в контейнере AJAX
+            if not book_elements and results_container:
+                book_elements = results_container.select('div.row.row-book, .book-item, .row-book')
+                print(f"[DEBUG] IPRbooks: в контейнере ajaxContentBooks найдено: {len(book_elements)}")
+            
+            # Пробуем найти любые ссылки на книги
+            if not book_elements:
+                book_links = soup.select('a[href*="/book/"], a[href*="/publication/"]')
+                print(f"[DEBUG] IPRbooks: найдено ссылок на книги: {len(book_links)}")
+                if book_links:
+                    # Создаем фиктивные элементы из ссылок
+                    for link in book_links[:10]:  # Берем первые 10
+                        parent = link.find_parent(['div', 'li', 'article'])
+                        if parent:
+                            book_elements.append(parent)
+                    print(f"[DEBUG] IPRbooks: создано элементов из ссылок: {len(book_elements)}")
 
             if not book_elements:
+                # Логируем структуру страницы для отладки
+                page_structure = soup.find_all(['div', 'section', 'article'], class_=True)[:10]
+                print(f"[DEBUG] IPRbooks: структура страницы (первые 10 элементов с классами):")
+                for elem in page_structure:
+                    print(f"  - {elem.name}.{'.'.join(elem.get('class', []))}")
                 print("[DEBUG] IPRbooks: результаты не найдены в HTML")
                 return None
         
@@ -571,6 +599,8 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
         "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
     }
 
     # Пробуем варианты поиска в порядке приоритета
@@ -617,56 +647,127 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
                 data = response.json()
             except ValueError as e:
                 print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга JSON: {e}")
-                print(f"[DEBUG] IPRbooks AJAX: ответ (первые 500 символов): {response.text[:500]}")
+                print(f"[DEBUG] IPRbooks AJAX: ответ (первые 1000 символов): {response.text[:1000]}")
                 continue
 
             if not data:
                 print("[DEBUG] IPRbooks AJAX: пустой JSON")
                 continue
 
-            if data.get("success") is False:
+            # Детальное логирование структуры ответа
+            print(f"[DEBUG] IPRbooks AJAX: тип ответа: {type(data)}")
+            if isinstance(data, dict):
+                print(f"[DEBUG] IPRbooks AJAX: ключи в ответе: {list(data.keys())}")
+                print(f"[DEBUG] IPRbooks AJAX: success = {data.get('success')}")
+                # Логируем первые несколько ключей с их типами
+                for key in list(data.keys())[:5]:
+                    value = data[key]
+                    value_type = type(value).__name__
+                    if isinstance(value, str):
+                        preview = value[:100] if len(value) > 100 else value
+                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): {preview}")
+                    elif isinstance(value, (list, tuple)):
+                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): длина={len(value)}")
+                    elif isinstance(value, dict):
+                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): ключи={list(value.keys())[:5]}")
+                    else:
+                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): {str(value)[:100]}")
+            elif isinstance(data, list):
+                print(f"[DEBUG] IPRbooks AJAX: ответ - список длиной {len(data)}")
+                if len(data) > 0:
+                    print(f"[DEBUG] IPRbooks AJAX: первый элемент типа: {type(data[0])}")
+            else:
+                print(f"[DEBUG] IPRbooks AJAX: ответ (первые 500 символов): {str(data)[:500]}")
+            
+            if isinstance(data, dict) and data.get("success") is False:
                 message = data.get('message', 'Неизвестная ошибка')
                 print(f"[DEBUG] IPRbooks AJAX: отказ сервера — {message}")
                 continue
 
             # Извлекаем HTML элементы из ответа
             book_elements: List[Tag] = []
-            data_items = data.get("data") or []
+            
+            # Пробуем разные варианты структуры ответа
+            data_items = None
+            if isinstance(data, dict):
+                # Вариант 1: data.data
+                data_items = data.get("data")
+                # Вариант 2: data.items или data.books
+                if not data_items:
+                    data_items = data.get("items") or data.get("books") or data.get("results")
+                # Вариант 3: весь ответ - это массив
+                if not data_items and isinstance(data, list):
+                    data_items = data
+            elif isinstance(data, list):
+                data_items = data
             
             if not data_items:
-                print("[DEBUG] IPRbooks AJAX: нет данных в ответе")
+                # Логируем полный ответ для отладки (если он не слишком большой)
+                response_str = str(data)
+                if len(response_str) < 2000:
+                    print(f"[DEBUG] IPRbooks AJAX: полный ответ: {response_str}")
+                else:
+                    print(f"[DEBUG] IPRbooks AJAX: нет данных в ответе. Структура ответа (первые 1000 символов): {response_str[:1000]}")
                 continue
             
-            for item in data_items:
+            print(f"[DEBUG] IPRbooks AJAX: найдено элементов данных: {len(data_items) if isinstance(data_items, (list, tuple)) else 1}")
+            
+            # Обрабатываем data_items
+            if not isinstance(data_items, (list, tuple)):
+                data_items = [data_items]
+            
+            for idx, item in enumerate(data_items):
                 if not item:
                     continue
 
                 html_snippet: Optional[str] = None
 
+                # Вариант 1: item - это строка с HTML
                 if isinstance(item, str):
                     html_snippet = item
+                    print(f"[DEBUG] IPRbooks AJAX: элемент {idx} - строка HTML (длина: {len(html_snippet)})")
+                # Вариант 2: item - это список/кортеж
                 elif isinstance(item, (list, tuple)):
                     for entry in item:
                         if isinstance(entry, str):
                             html_snippet = entry
                             break
                         if isinstance(entry, dict):
-                            html_snippet = entry.get("html") or entry.get("content")
+                            html_snippet = entry.get("html") or entry.get("content") or entry.get("text")
                             if html_snippet:
                                 break
+                # Вариант 3: item - это словарь
                 elif isinstance(item, dict):
-                    html_snippet = item.get("html") or item.get("content")
+                    html_snippet = item.get("html") or item.get("content") or item.get("text") or item.get("body")
+                    # Если не нашли HTML, пробуем найти вложенные структуры
+                    if not html_snippet:
+                        # Может быть вложенная структура
+                        for key in ['data', 'result', 'html_content']:
+                            nested = item.get(key)
+                            if isinstance(nested, str):
+                                html_snippet = nested
+                                break
 
                 if not html_snippet or not isinstance(html_snippet, str):
+                    print(f"[DEBUG] IPRbooks AJAX: элемент {idx} не содержит HTML. Тип: {type(item)}, значение: {str(item)[:200]}")
                     continue
 
                 try:
                     snippet_soup = BeautifulSoup(html_snippet, "html.parser")
-                    div = snippet_soup.select_one('div.row.row-book')
+                    # Пробуем разные селекторы
+                    div = (
+                        snippet_soup.select_one('div.row.row-book') or
+                        snippet_soup.select_one('.row.row-book') or
+                        snippet_soup.select_one('div[class*="row-book"]') or
+                        snippet_soup.select_one('.book-item')
+                    )
                     if div:
                         book_elements.append(div)
+                        print(f"[DEBUG] IPRbooks AJAX: элемент {idx} успешно распарсен")
+                    else:
+                        print(f"[DEBUG] IPRbooks AJAX: элемент {idx} не содержит div.row.row-book. HTML: {html_snippet[:200]}")
                 except Exception as e:
-                    print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга HTML фрагмента: {e}")
+                    print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга HTML фрагмента {idx}: {e}")
                     continue
 
             if book_elements:
