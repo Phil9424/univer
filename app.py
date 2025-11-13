@@ -429,6 +429,26 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
                     print(f"  - {elem.name}.{'.'.join(elem.get('class', []))}")
                 print("[DEBUG] IPRbooks: результаты не найдены в HTML")
                 return None
+            
+            # Проверяем релевантность HTML результатов
+            if book_elements:
+                subject_words = [w.lower() for w in subject.split() if len(w) > 2]
+                if subject_words:
+                    relevant_count = 0
+                    for book_elem in book_elements[:5]:
+                        try:
+                            title_link = book_elem.select_one('h4 a')
+                            if title_link:
+                                title_text = title_link.get_text(strip=True).lower()
+                                matches = sum(1 for word in subject_words if word in title_text)
+                                if matches > 0:
+                                    relevant_count += 1
+                        except Exception:
+                            pass
+                    
+                    if relevant_count == 0 and len(book_elements) > 0:
+                        print(f"[DEBUG] IPRbooks HTML: предупреждение - результаты не релевантны запросу '{subject}' (0/{min(5, len(book_elements))} релевантных)")
+                        # Но все равно используем их, так как это fallback
         
         # Применяем скоринг для выбора лучшей книги
         best_book = None
@@ -638,10 +658,13 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
     VERCEL_TIMEOUT = 7  # Уменьшенный таймаут для Vercel
     
     ajax_url = urljoin(base_url, "107257")
+    # Пробуем добавить поисковый запрос в URL параметры тоже
     params = {"page": 1}
     
     # ВАЖНО: Сначала загружаем страницу поиска, чтобы получить правильную сессию
     search_page_url = urljoin(base_url, "586.html")
+    input_name = 'pagetitle'  # По умолчанию
+    
     try:
         print(f"[DEBUG] IPRbooks AJAX: загружаем страницу поиска для установки сессии")
         search_page_response = session.get(search_page_url, timeout=VERCEL_TIMEOUT)
@@ -650,21 +673,38 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
         else:
             # Парсим страницу, чтобы найти форму поиска и её параметры
             search_soup = BeautifulSoup(search_page_response.text, 'html.parser')
-            search_input = search_soup.find('input', {'id': 'pagetitle'}) or search_soup.find('input', {'name': 'pagetitle'})
+            # Ищем поле поиска - может быть pagetitle, title, или другое имя
+            search_input = (
+                search_soup.find('input', {'id': 'pagetitle'}) or 
+                search_soup.find('input', {'name': 'pagetitle'}) or
+                search_soup.find('input', {'id': 'title'}) or
+                search_soup.find('input', {'name': 'title'})
+            )
             if search_input:
-                input_name = search_input.get('name', 'pagetitle')
+                input_name = search_input.get('name') or search_input.get('id') or 'pagetitle'
                 print(f"[DEBUG] IPRbooks AJAX: найдено поле поиска с именем: {input_name}")
             
             # ВАЖНО: Отправляем POST запрос на страницу поиска, чтобы установить поисковый запрос в сессии
             # Это может быть необходимо для того, чтобы AJAX запрос работал правильно
             try:
                 print(f"[DEBUG] IPRbooks AJAX: отправляем POST на страницу поиска для установки запроса '{subject}'")
+                # Используем правильное имя поля из формы
                 form_data = {
-                    'pagetitle': subject.strip(),
+                    input_name: subject.strip(),
                     'submit': 'Применить'
                 }
                 form_response = session.post(search_page_url, data=form_data, timeout=VERCEL_TIMEOUT, allow_redirects=True)
                 print(f"[DEBUG] IPRbooks AJAX: POST на страницу поиска - статус {form_response.status_code}")
+                
+                # Обновляем cookies из ответа, чтобы сохранить сессию
+                if form_response.cookies:
+                    session.cookies.update(form_response.cookies)
+                    print(f"[DEBUG] IPRbooks AJAX: обновлены cookies из ответа формы")
+                
+                # Проверяем, что поиск действительно установлен - ищем наш запрос в ответе
+                if subject.lower() not in form_response.text.lower()[:5000]:
+                    print(f"[DEBUG] IPRbooks AJAX: предупреждение - запрос '{subject}' не найден в ответе формы поиска")
+                
                 # Небольшая задержка для обработки на сервере
                 import time
                 time.sleep(0.5)
@@ -673,20 +713,16 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
     except Exception as e:
         print(f"[DEBUG] IPRbooks AJAX: ошибка загрузки страницы поиска: {e}")
     
-    # Формируем payload - пробуем разные варианты имени поля
-    # Возможно нужно использовать другое имя поля или формат
+    # Формируем payload - используем оба варианта имени поля для надежности
+    # AJAX API может использовать pagetitle, но форма использует title
     base_payload = {
         "action": "getPublications",
-        "pagetitle": subject.strip(),  # Основное поле
+        "pagetitle": subject.strip(),  # AJAX API обычно использует pagetitle
     }
-    
-    # Также пробуем альтернативные имена полей
-    alternative_payloads = [
-        {"title": subject.strip()},
-        {"query": subject.strip()},
-        {"search": subject.strip()},
-        {"words": subject.strip()},
-    ]
+    # Если форма использует 'title', добавляем его тоже
+    if input_name == 'title':
+        base_payload["title"] = subject.strip()
+        print(f"[DEBUG] IPRbooks AJAX: добавляем поле 'title' в payload (форма использует это имя)")
     headers = {
         "Referer": search_page_url,
         "Origin": base_url.rstrip("/"),
@@ -870,10 +906,35 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
                         continue
 
             if book_elements:
+                # Проверяем релевантность результатов перед возвратом
+                # Если результаты не соответствуют запросу, пробуем следующий вариант
+                subject_words = [w.lower() for w in subject.split() if len(w) > 2]
+                if subject_words:
+                    # Проверяем первые несколько результатов на релевантность
+                    relevant_count = 0
+                    for book_elem in book_elements[:5]:  # Проверяем первые 5
+                        try:
+                            title_link = book_elem.select_one('h4 a')
+                            if title_link:
+                                title_text = title_link.get_text(strip=True).lower()
+                                # Проверяем совпадение ключевых слов
+                                matches = sum(1 for word in subject_words if word in title_text)
+                                if matches > 0:
+                                    relevant_count += 1
+                        except Exception:
+                            pass
+                    
+                    # Если менее 20% результатов релевантны, считаем что поиск не сработал
+                    if relevant_count == 0 and len(book_elements) > 0:
+                        print(f"[DEBUG] IPRbooks AJAX: результаты не релевантны запросу '{subject}' (0/{min(5, len(book_elements))} релевантных), пробуем следующий вариант")
+                        continue
+                    elif relevant_count > 0:
+                        print(f"[DEBUG] IPRbooks AJAX: найдено {relevant_count} релевантных результатов из {min(5, len(book_elements))}, используем их")
+                
                 print(f"[DEBUG] IPRbooks AJAX: итого получено элементов {len(book_elements)}")
                 return book_elements
 
-        print("[DEBUG] IPRbooks AJAX: не удалось получить данные через API ни для одного варианта")
+        print("[DEBUG] IPRbooks AJAX: не удалось получить релевантные данные через API ни для одного варианта")
         return []
 
     except requests.exceptions.RequestException as exc:
