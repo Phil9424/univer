@@ -450,18 +450,34 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
                 
                 # Exact match gets highest score
                 if subject_lower in title_lower:
-                    score += 3
+                    score += 10
                 
-                # Partial keyword matching
-                subject_words = subject_lower.split()
-                for word in subject_words:
-                    if len(word) > 2 and word in title_lower:
-                        score += 2
+                # Проверяем совпадение ключевых слов из запроса
+                subject_words = [w for w in subject_lower.split() if len(w) > 2]
+                title_words = title_lower.split()
+                
+                # Подсчитываем совпадения слов
+                matched_words = sum(1 for word in subject_words if word in title_lower)
+                if matched_words > 0:
+                    score += matched_words * 3  # +3 за каждое совпавшее слово
+                
+                # Бонус за совпадение важных слов (первые слова запроса обычно важнее)
+                if subject_words:
+                    first_word = subject_words[0]
+                    if first_word in title_lower:
+                        score += 5
+                
+                # Проверяем совпадение по частям (для составных терминов)
+                # Например, "анатомия человека" должно совпадать с "анатомия" и "человек"
+                important_parts = [w for w in subject_words if len(w) > 4]  # Длинные слова важнее
+                for part in important_parts:
+                    if part in title_lower:
+                        score += 4
                 
                 # Penalty for completely unrelated topics
-                unrelated_words = ["программирование", "информатика", "математика", "физика", "химия"]
+                unrelated_words = ["программирование", "информатика", "математика", "физика", "химия", "английский", "язык"]
                 if any(word in title_lower for word in unrelated_words) and not any(word in subject_lower for word in unrelated_words):
-                    score = -10
+                    score -= 15
                 
                 # Strong penalty for automation books when not searching for automation
                 automation_words = ["автоматизация", "автоматизированный", "automation", "автомат", "машиностроение"]
@@ -469,7 +485,16 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
                 automation_in_subject = any(word in subject_lower for word in ["автомат", "машин", "производств"])
                 
                 if automation_in_title and not automation_in_subject:
-                    score = -20  # Very strong penalty
+                    score -= 25  # Very strong penalty
+                
+                # Penalty for books that start with "А" when searching for something else (alphabetical sorting issue)
+                if title_lower.startswith('а') and not subject_lower.startswith('а'):
+                    # Если запрос не начинается с "А", но книга начинается - это может быть алфавитная сортировка
+                    # Небольшой штраф, но не критичный
+                    if score < 5:  # Только если уже низкий балл
+                        score -= 2
+                
+                print(f"[DEBUG] IPRbooks: книга '{title_text[:50]}...' - балл: {score}")
                 
                 if score > best_score:
                     best_score = score
@@ -480,13 +505,22 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
                 print(f"[DEBUG] IPRbooks ошибка обработки элемента: {e}")
                 continue
         
-        # Если не нашли хорошую книгу, берем первую
-        if best_element is None or best_score < 0:
-            print("[DEBUG] IPRbooks: не найдено подходящих книг, берем первую")
-            best_element = book_elements[0]
-            title_link = best_element.select_one('h4 a')
-            if title_link:
-                best_book = title_link.get_text(strip=True)
+        print(f"[DEBUG] IPRbooks: лучшая книга выбрана с баллом {best_score}: '{best_book[:80] if best_book else 'None'}...'")
+        
+        # Если не нашли хорошую книгу (балл слишком низкий), пробуем следующий вариант поиска
+        if best_element is None or best_score < 3:
+            print(f"[DEBUG] IPRbooks: не найдено подходящих книг (лучший балл: {best_score}), берем первую")
+            if book_elements:
+                best_element = book_elements[0]
+                title_link = best_element.select_one('h4 a')
+                if title_link:
+                    best_book = title_link.get_text(strip=True)
+                else:
+                    # Пробуем получить из data-атрибутов
+                    book_id = best_element.get('data-book-id')
+                    pagetitle = best_element.get('data-pagetitle')
+                    if pagetitle:
+                        best_book = pagetitle
         
         if not best_element:
             return None
@@ -704,22 +738,26 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
             book_elements: List[Tag] = []
             
             # СНАЧАЛА пробуем использовать text_data (HTML контейнер с результатами)
+            text_data_found = False
             if isinstance(data, dict) and data.get("text_data"):
                 text_data = data.get("text_data")
                 if isinstance(text_data, str) and len(text_data) > 100:
-                    print(f"[DEBUG] IPRbooks AJAX: используем text_data (длина: {len(text_data)})")
+                    print(f"[DEBUG] IPRbooks AJAX: проверяем text_data (длина: {len(text_data)})")
                     try:
                         text_soup = BeautifulSoup(text_data, "html.parser")
                         # Ищем элементы книг в text_data
                         found_elements = text_soup.select('div.row.row-book, .row.row-book, div[class*="row-book"], .book-item')
-                        if found_elements:
+                        if found_elements and len(found_elements) > 0:
                             book_elements.extend(found_elements)
+                            text_data_found = True
                             print(f"[DEBUG] IPRbooks AJAX: найдено {len(found_elements)} элементов в text_data")
+                        else:
+                            print(f"[DEBUG] IPRbooks AJAX: text_data не содержит элементов книг, используем data")
                     except Exception as e:
                         print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга text_data: {e}")
             
             # Если не нашли в text_data, пробуем парсить data (список словарей)
-            if not book_elements:
+            if not text_data_found:
                 data_items = None
                 if isinstance(data, dict):
                     data_items = data.get("data")
