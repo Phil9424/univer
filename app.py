@@ -109,6 +109,9 @@ KNOWN_RESOURCE_RULES = [
     },
 ]
 
+# Cookies для авторизации на IPRbooks
+# ВАЖНО: Если поиск перестанет работать на Vercel, возможно нужно обновить cookies
+# Получить актуальные cookies можно через DevTools браузера после авторизации на сайте
 IPRBOOKSHOP_COOKIES = {
     ".iprbookshop.ru": {
         "_ym_d": "1762763770",
@@ -303,6 +306,9 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
     """Поиск на IPRbooks через requests для совместимости с Vercel"""
     print(f"[DEBUG] IPRbooks поиск через requests: '{subject}'")
     
+    # Таймауты оптимизированы для Vercel (serverless функции имеют ограничение ~10 сек)
+    VERCEL_TIMEOUT = 8  # Уменьшаем таймаут для Vercel
+    
     try:
         # Используем requests с более реалистичными заголовками для Vercel
         session = requests.Session()
@@ -329,78 +335,71 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
         base_url = "https://www.iprbookshop.ru/"
         search_url = urljoin(base_url, "586.html")
 
-        # Сначала получаем главную страницу для установки сессии/куки
-        print("[DEBUG] IPRbooks: инициализация сессии")
-        main_response = session.get(base_url, timeout=15)
-        print(f"[DEBUG] IPRbooks: главная страница - статус {main_response.status_code}")
-
-        # Основной запрос: GET с параметрами как в браузере
-        params = {'pagetitle': subject, 'PAGEN_1': 1}
-        headers = {
-            'Referer': search_url,
-            'Origin': base_url
-        }
-        print(f"[DEBUG] IPRbooks: отправляем GET запрос с параметрами: {params}")
-        response = session.get(search_url, params=params, headers=headers, timeout=15, allow_redirects=True)
-        print(f"[DEBUG] IPRbooks: GET ответ - статус {response.status_code}, URL: {response.url}")
-
-        # Если GET не дал результата, пробуем POST в качестве резервного варианта
-        if response.status_code != 200 or not response.text:
-            search_data = {'pagetitle': subject, 'submit': 'Применить'}
-            print("[DEBUG] IPRbooks: GET не вернул данных, пробуем POST")
-            response = session.post(search_url, data=search_data, headers=headers, timeout=15, allow_redirects=True)
-            print(f"[DEBUG] IPRbooks: POST ответ - статус {response.status_code}, URL: {response.url}")
-
-        if response.status_code != 200:
-            print(f"[DEBUG] IPRbooks: неожиданный статус {response.status_code}")
-            return None
-
-        preview_text = response.text[:800].replace('\n', ' ').strip()
-        print(f"[DEBUG] IPRbooks: превью HTML: {preview_text}")
-        if not preview_text:
-            print("[DEBUG] IPRbooks: тело ответа пустое")
-            return None
-
-        if "auth" in response.url.lower() or "login" in response.url.lower():
-            print("[DEBUG] IPRbooks: перенаправление на авторизацию")
-            return None
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Отладочная информация о содержимом страницы
-        page_title = soup.find('title')
-        print(f"[DEBUG] IPRbooks: заголовок страницы: {page_title.get_text() if page_title else 'Не найден'}")
-        
-        # Проверяем наличие контейнера результатов
-        results_container = soup.find('div', {'id': 'ajaxContentBooks'})
-        if results_container:
-            print(f"[DEBUG] IPRbooks: найден контейнер результатов")
+        # СНАЧАЛА пробуем AJAX API (быстрее и надежнее для Vercel)
+        print("[DEBUG] IPRbooks: пробуем AJAX API сначала")
+        ajax_results = fetch_iprbookshop_ajax_results(session, subject, base_url)
+        if ajax_results:
+            print(f"[DEBUG] IPRbooks: AJAX API вернул {len(ajax_results)} результатов")
+            book_elements = ajax_results
         else:
-            print(f"[DEBUG] IPRbooks: контейнер результатов не найден")
-            # Попробуем найти результаты без контейнера
-        
-        # Ищем результаты поиска
-        book_elements = soup.select('div.row.row-book')
-        print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
+            print("[DEBUG] IPRbooks: AJAX API не вернул результатов, пробуем HTML поиск")
+            
+            # Fallback: получаем главную страницу для установки сессии/куки
+            try:
+                main_response = session.get(base_url, timeout=VERCEL_TIMEOUT)
+                print(f"[DEBUG] IPRbooks: главная страница - статус {main_response.status_code}")
+            except Exception as e:
+                print(f"[DEBUG] IPRbooks: ошибка получения главной страницы: {e}")
 
-        # Если не нашли стандартные элементы, попробуем другие селекторы
-        if not book_elements:
-            book_elements = soup.select('.book-item, .search-result, .publication')
-            print(f"[DEBUG] IPRbooks альтернативный поиск найдено: {len(book_elements)}")
+            # Основной запрос: POST с данными поиска
+            search_data = {'pagetitle': subject, 'submit': 'Применить'}
+            headers = {
+                'Referer': base_url,
+                'Origin': base_url.rstrip('/')
+            }
+            print(f"[DEBUG] IPRbooks: отправляем POST запрос с данными: {search_data}")
+            
+            try:
+                response = session.post(search_url, data=search_data, headers=headers, timeout=VERCEL_TIMEOUT, allow_redirects=True)
+                print(f"[DEBUG] IPRbooks: POST ответ - статус {response.status_code}, URL: {response.url}")
+            except requests.exceptions.Timeout:
+                print("[DEBUG] IPRbooks: таймаут POST запроса")
+                return None
+            except requests.exceptions.RequestException as e:
+                print(f"[DEBUG] IPRbooks: ошибка POST запроса: {e}")
+                return None
 
-        if not book_elements:
-            if results_container:
-                container_attrs = {k: v for k, v in results_container.attrs.items() if k not in ("class",)}
-                print(f"[DEBUG] IPRbooks: атрибуты контейнера: {container_attrs}")
-                container_html = results_container.prettify()[:800].replace('\n', ' ').strip()
-                print(f"[DEBUG] IPRbooks: контейнер HTML: {container_html}")
+            if response.status_code != 200:
+                print(f"[DEBUG] IPRbooks: неожиданный статус {response.status_code}")
+                return None
 
-            ajax_results = fetch_iprbookshop_ajax_results(session, subject, base_url)
-            if ajax_results:
-                book_elements = ajax_results
-            else:
-                print("[DEBUG] IPRbooks: результаты не найдены")
-                print(f"[DEBUG] IPRbooks: HTML содержимое (начало): {response.text[:1000]}")
+            preview_text = response.text[:800].replace('\n', ' ').strip()
+            print(f"[DEBUG] IPRbooks: превью HTML: {preview_text}")
+            if not preview_text:
+                print("[DEBUG] IPRbooks: тело ответа пустое")
+                return None
+
+            if "auth" in response.url.lower() or "login" in response.url.lower():
+                print("[DEBUG] IPRbooks: перенаправление на авторизацию")
+                return None
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Отладочная информация о содержимом страницы
+            page_title = soup.find('title')
+            print(f"[DEBUG] IPRbooks: заголовок страницы: {page_title.get_text() if page_title else 'Не найден'}")
+            
+            # Ищем результаты поиска
+            book_elements = soup.select('div.row.row-book')
+            print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
+
+            # Если не нашли стандартные элементы, пробуем другие селекторы
+            if not book_elements:
+                book_elements = soup.select('.book-item, .search-result, .publication')
+                print(f"[DEBUG] IPRbooks альтернативный поиск найдено: {len(book_elements)}")
+
+            if not book_elements:
+                print("[DEBUG] IPRbooks: результаты не найдены в HTML")
                 return None
         
         # Применяем скоринг для выбора лучшей книги
@@ -485,7 +484,7 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
                 'Referer': search_url,
                 'Origin': base_url
             }
-            detail_response = session.get(detail_url, headers=detail_headers, timeout=15)
+            detail_response = session.get(detail_url, headers=detail_headers, timeout=VERCEL_TIMEOUT)
             
             if detail_response.status_code == 200:
                 detail_preview = detail_response.text[:600].replace('\n', ' ').strip()
@@ -558,6 +557,8 @@ def fetch_iprbookshop_reader(subject: str) -> Optional[Dict[str, Any]]:
 
 def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base_url: str) -> List[Tag]:
     """Повторяет AJAX-запрос /107257, который делает фронтенд IPR SMART"""
+    VERCEL_TIMEOUT = 7  # Уменьшенный таймаут для Vercel
+    
     ajax_url = urljoin(base_url, "107257")
     params = {"page": 1}
     base_payload = {
@@ -569,37 +570,74 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
         "Origin": base_url.rstrip("/"),
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     }
 
+    # Пробуем варианты поиска в порядке приоритета
     search_variants = [
-        {"search_type": 1, "available": 1},
-        {"search_type": 2, "available": 1},
-        {"search_type": 1, "available": 2},
-        {"search_type": 2, "available": 2},
+        {"search_type": 1, "available": 1},  # По названию, доступные
+        {"search_type": 2, "available": 1},  # По содержанию, доступные
+        {"search_type": 1, "available": 2},  # По названию, все
+        {"search_type": 2, "available": 2},  # По содержанию, все
     ]
 
     try:
+        # Сначала получаем главную страницу для установки сессии (если еще не получена)
+        try:
+            session.get(base_url, timeout=3)
+        except:
+            pass  # Игнорируем ошибки, если уже есть сессия
+        
         for variant in search_variants:
             payload = {**base_payload, **variant}
             print(f"[DEBUG] IPRbooks AJAX: попытка с параметрами {payload}")
-            response = session.post(ajax_url, params=params, data=payload, headers=headers, timeout=15)
-            print(f"[DEBUG] IPRbooks AJAX: статус {response.status_code}, url {response.url}")
+            
+            try:
+                response = session.post(
+                    ajax_url, 
+                    params=params, 
+                    data=payload, 
+                    headers=headers, 
+                    timeout=VERCEL_TIMEOUT
+                )
+                print(f"[DEBUG] IPRbooks AJAX: статус {response.status_code}, url {response.url}")
+            except requests.exceptions.Timeout:
+                print(f"[DEBUG] IPRbooks AJAX: таймаут для варианта {variant}")
+                continue
+            except requests.exceptions.RequestException as e:
+                print(f"[DEBUG] IPRbooks AJAX: ошибка запроса для варианта {variant}: {e}")
+                continue
 
             if response.status_code != 200:
                 print(f"[DEBUG] IPRbooks AJAX: неожиданный статус {response.status_code}")
                 continue
 
-            data = response.json()
+            # Парсим JSON ответ
+            try:
+                data = response.json()
+            except ValueError as e:
+                print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга JSON: {e}")
+                print(f"[DEBUG] IPRbooks AJAX: ответ (первые 500 символов): {response.text[:500]}")
+                continue
+
             if not data:
                 print("[DEBUG] IPRbooks AJAX: пустой JSON")
                 continue
 
             if data.get("success") is False:
-                print(f"[DEBUG] IPRbooks AJAX: отказ сервера — {data.get('message')}")
+                message = data.get('message', 'Неизвестная ошибка')
+                print(f"[DEBUG] IPRbooks AJAX: отказ сервера — {message}")
                 continue
 
+            # Извлекаем HTML элементы из ответа
             book_elements: List[Tag] = []
-            for item in data.get("data") or []:
+            data_items = data.get("data") or []
+            
+            if not data_items:
+                print("[DEBUG] IPRbooks AJAX: нет данных в ответе")
+                continue
+            
+            for item in data_items:
                 if not item:
                     continue
 
@@ -622,26 +660,32 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
                 if not html_snippet or not isinstance(html_snippet, str):
                     continue
 
-                snippet_soup = BeautifulSoup(html_snippet, "html.parser")
-                div = snippet_soup.select_one('div.row.row-book')
-                if div:
-                    book_elements.append(div)
+                try:
+                    snippet_soup = BeautifulSoup(html_snippet, "html.parser")
+                    div = snippet_soup.select_one('div.row.row-book')
+                    if div:
+                        book_elements.append(div)
+                except Exception as e:
+                    print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга HTML фрагмента: {e}")
+                    continue
 
             if book_elements:
                 print(f"[DEBUG] IPRbooks AJAX: получено элементов {len(book_elements)}")
                 return book_elements
 
-        print("[DEBUG] IPRbooks AJAX: не удалось получить данные через API")
+        print("[DEBUG] IPRbooks AJAX: не удалось получить данные через API ни для одного варианта")
         return []
 
     except requests.exceptions.RequestException as exc:
-        print(f"[DEBUG] IPRbooks AJAX: ошибка запроса {exc}")
+        print(f"[DEBUG] IPRbooks AJAX: критическая ошибка запроса {exc}")
         return []
     except ValueError as exc:
-        print(f"[DEBUG] IPRbooks AJAX: ошибка парсинга JSON {exc}")
+        print(f"[DEBUG] IPRbooks AJAX: критическая ошибка парсинга JSON {exc}")
         return []
     except Exception as exc:
         print(f"[DEBUG] IPRbooks AJAX: неожиданная ошибка {exc}")
+        import traceback
+        print(f"[DEBUG] IPRbooks AJAX: traceback: {traceback.format_exc()}")
         return []
 
 
@@ -686,6 +730,7 @@ def get_multiple_iprbookshop_results(page, subject: str, results_count: int, max
 def search_iprbookshop_multiple_results(subject: str, max_results: int = 10) -> List[Dict[str, Any]]:
     """Ищет несколько результатов на IPRbooks через requests"""
     print(f"[DEBUG] IPRbooks множественный поиск через requests: '{subject}'")
+    VERCEL_TIMEOUT = 7  # Уменьшенный таймаут для Vercel
     
     try:
         # Используем requests с теми же заголовками что и в основной функции
@@ -701,29 +746,57 @@ def search_iprbookshop_multiple_results(subject: str, max_results: int = 10) -> 
             'Cache-Control': 'max-age=0'
         })
         
-        # Сначала получаем главную страницу
-        main_response = session.get("https://www.iprbookshop.ru/", timeout=15)
-        print(f"[DEBUG] IPRbooks множественный: главная страница - статус {main_response.status_code}")
+        # Загружаем cookies
+        for domain, cookies in IPRBOOKSHOP_COOKIES.items():
+            for name, value in cookies.items():
+                session.cookies.set(name, value, domain=domain, path="/")
         
-        # Поиск на IPRbooks
-        search_url = "https://www.iprbookshop.ru/586.html"
-        search_data = {
-            'pagetitle': subject,
-            'submit': 'Применить'
-        }
+        base_url = "https://www.iprbookshop.ru/"
         
-        response = session.post(search_url, data=search_data, timeout=15, allow_redirects=True)
-        print(f"[DEBUG] IPRbooks множественный: POST ответ - статус {response.status_code}")
+        # СНАЧАЛА пробуем AJAX API (быстрее и надежнее)
+        print("[DEBUG] IPRbooks множественный: пробуем AJAX API")
+        ajax_results = fetch_iprbookshop_ajax_results(session, subject, base_url)
         
-        if response.status_code != 200:
-            print(f"[DEBUG] IPRbooks множественный: неожиданный статус {response.status_code}")
+        book_elements = []
+        if ajax_results:
+            print(f"[DEBUG] IPRbooks множественный: AJAX API вернул {len(ajax_results)} результатов")
+            book_elements = ajax_results
+        else:
+            # Fallback: HTML поиск
+            print("[DEBUG] IPRbooks множественный: AJAX не сработал, пробуем HTML поиск")
+            try:
+                main_response = session.get(base_url, timeout=VERCEL_TIMEOUT)
+                print(f"[DEBUG] IPRbooks множественный: главная страница - статус {main_response.status_code}")
+            except Exception as e:
+                print(f"[DEBUG] IPRbooks множественный: ошибка получения главной страницы: {e}")
+            
+            search_url = urljoin(base_url, "586.html")
+            search_data = {
+                'pagetitle': subject,
+                'submit': 'Применить'
+            }
+            
+            try:
+                response = session.post(search_url, data=search_data, timeout=VERCEL_TIMEOUT, allow_redirects=True)
+                print(f"[DEBUG] IPRbooks множественный: POST ответ - статус {response.status_code}")
+            except requests.exceptions.Timeout:
+                print("[DEBUG] IPRbooks множественный: таймаут POST запроса")
+                return []
+            except requests.exceptions.RequestException as e:
+                print(f"[DEBUG] IPRbooks множественный: ошибка POST запроса: {e}")
+                return []
+            
+            if response.status_code != 200:
+                print(f"[DEBUG] IPRbooks множественный: неожиданный статус {response.status_code}")
+                return []
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            book_elements = soup.select('div.row.row-book')
+            print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
+        
+        if not book_elements:
+            print("[DEBUG] IPRbooks множественный: результаты не найдены")
             return []
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Ищем результаты поиска
-        book_elements = soup.select('div.row.row-book')
-        print(f"[DEBUG] IPRbooks найдено элементов книг: {len(book_elements)}")
         
         results = []
         
@@ -740,21 +813,25 @@ def search_iprbookshop_multiple_results(subject: str, max_results: int = 10) -> 
                 if not detail_href or detail_href.startswith('javascript'):
                     continue
                 
-                detail_url = urljoin("https://www.iprbookshop.ru/", detail_href)
+                detail_url = urljoin(base_url, detail_href)
                 
-                # Пытаемся получить прямую ссылку для чтения
+                # Пытаемся получить прямую ссылку для чтения (с коротким таймаутом)
                 reader_url = detail_url
                 try:
                     detail_response = session.get(detail_url, timeout=5)
-                    detail_response.raise_for_status()
-                    detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
-                    
-                    # Ищем кнопку "Читать"
-                    read_button = detail_soup.select_one('a.btn-read')
-                    if read_button and read_button.get('href'):
-                        reader_href = read_button.get('href')
-                        reader_url = urljoin(detail_url, reader_href)
-                        print(f"[DEBUG] IPRbooks: найдена прямая ссылка для чтения: {reader_url}")
+                    if detail_response.status_code == 200:
+                        detail_soup = BeautifulSoup(detail_response.text, 'html.parser')
+                        
+                        # Ищем кнопку "Читать"
+                        read_button = (
+                            detail_soup.select_one('a.btn-read') or
+                            detail_soup.select_one('a[href*="epd-reader"]') or
+                            detail_soup.select_one('a[href*="reader"]')
+                        )
+                        if read_button and read_button.get('href'):
+                            reader_href = read_button.get('href')
+                            reader_url = urljoin(detail_url, reader_href)
+                            print(f"[DEBUG] IPRbooks: найдена прямая ссылка для чтения: {reader_url}")
                 
                 except Exception as e:
                     print(f"[DEBUG] IPRbooks: не удалось получить прямую ссылку для {i}: {e}")
@@ -776,6 +853,8 @@ def search_iprbookshop_multiple_results(subject: str, max_results: int = 10) -> 
         
     except Exception as e:
         print(f"[DEBUG] IPRbooks ошибка множественного поиска: {e}")
+        import traceback
+        print(f"[DEBUG] IPRbooks traceback: {traceback.format_exc()}")
         return []
 
 
