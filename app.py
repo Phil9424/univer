@@ -639,12 +639,56 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
     
     ajax_url = urljoin(base_url, "107257")
     params = {"page": 1}
+    
+    # ВАЖНО: Сначала загружаем страницу поиска, чтобы получить правильную сессию
+    search_page_url = urljoin(base_url, "586.html")
+    try:
+        print(f"[DEBUG] IPRbooks AJAX: загружаем страницу поиска для установки сессии")
+        search_page_response = session.get(search_page_url, timeout=VERCEL_TIMEOUT)
+        if search_page_response.status_code != 200:
+            print(f"[DEBUG] IPRbooks AJAX: ошибка загрузки страницы поиска: {search_page_response.status_code}")
+        else:
+            # Парсим страницу, чтобы найти форму поиска и её параметры
+            search_soup = BeautifulSoup(search_page_response.text, 'html.parser')
+            search_input = search_soup.find('input', {'id': 'pagetitle'}) or search_soup.find('input', {'name': 'pagetitle'})
+            if search_input:
+                input_name = search_input.get('name', 'pagetitle')
+                print(f"[DEBUG] IPRbooks AJAX: найдено поле поиска с именем: {input_name}")
+            
+            # ВАЖНО: Отправляем POST запрос на страницу поиска, чтобы установить поисковый запрос в сессии
+            # Это может быть необходимо для того, чтобы AJAX запрос работал правильно
+            try:
+                print(f"[DEBUG] IPRbooks AJAX: отправляем POST на страницу поиска для установки запроса '{subject}'")
+                form_data = {
+                    'pagetitle': subject.strip(),
+                    'submit': 'Применить'
+                }
+                form_response = session.post(search_page_url, data=form_data, timeout=VERCEL_TIMEOUT, allow_redirects=True)
+                print(f"[DEBUG] IPRbooks AJAX: POST на страницу поиска - статус {form_response.status_code}")
+                # Небольшая задержка для обработки на сервере
+                import time
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"[DEBUG] IPRbooks AJAX: ошибка отправки формы поиска: {e}")
+    except Exception as e:
+        print(f"[DEBUG] IPRbooks AJAX: ошибка загрузки страницы поиска: {e}")
+    
+    # Формируем payload - пробуем разные варианты имени поля
+    # Возможно нужно использовать другое имя поля или формат
     base_payload = {
         "action": "getPublications",
-        "pagetitle": subject,
+        "pagetitle": subject.strip(),  # Основное поле
     }
+    
+    # Также пробуем альтернативные имена полей
+    alternative_payloads = [
+        {"title": subject.strip()},
+        {"query": subject.strip()},
+        {"search": subject.strip()},
+        {"words": subject.strip()},
+    ]
     headers = {
-        "Referer": urljoin(base_url, "586.html"),
+        "Referer": search_page_url,
         "Origin": base_url.rstrip("/"),
         "X-Requested-With": "XMLHttpRequest",
         "Accept": "application/json, text/javascript, */*; q=0.01",
@@ -662,17 +706,14 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
     ]
 
     try:
-        # Сначала получаем главную страницу для установки сессии (если еще не получена)
-        try:
-            session.get(base_url, timeout=3)
-        except:
-            pass  # Игнорируем ошибки, если уже есть сессия
         
         for variant in search_variants:
             payload = {**base_payload, **variant}
-            print(f"[DEBUG] IPRbooks AJAX: попытка с параметрами {payload}")
+            print(f"[DEBUG] IPRbooks AJAX: попытка поиска '{subject}' с параметрами {payload}")
+            print(f"[DEBUG] IPRbooks AJAX: отправляем POST на {ajax_url} с данными: pagetitle='{payload.get('pagetitle')}', search_type={payload.get('search_type')}, available={payload.get('available')}")
             
             try:
+                # Отправляем POST запрос с данными поиска
                 response = session.post(
                     ajax_url, 
                     params=params, 
@@ -681,6 +722,14 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
                     timeout=VERCEL_TIMEOUT
                 )
                 print(f"[DEBUG] IPRbooks AJAX: статус {response.status_code}, url {response.url}")
+                print(f"[DEBUG] IPRbooks AJAX: размер ответа: {len(response.text)} байт")
+                
+                # Проверяем, что запрос действительно содержит наш поисковый запрос
+                response_preview = response.text.lower()[:2000]
+                if subject.lower() not in response_preview:
+                    # Если в ответе нет нашего запроса, возможно поиск не сработал
+                    print(f"[DEBUG] IPRbooks AJAX: предупреждение - в ответе не найден запрос '{subject}'")
+                    print(f"[DEBUG] IPRbooks AJAX: превью ответа: {response.text[:500]}")
             except requests.exceptions.Timeout:
                 print(f"[DEBUG] IPRbooks AJAX: таймаут для варианта {variant}")
                 continue
@@ -709,19 +758,32 @@ def fetch_iprbookshop_ajax_results(session: requests.Session, subject: str, base
             if isinstance(data, dict):
                 print(f"[DEBUG] IPRbooks AJAX: ключи в ответе: {list(data.keys())}")
                 print(f"[DEBUG] IPRbooks AJAX: success = {data.get('success')}")
+                
+                # Проверяем данные на релевантность запросу
+                data_items = data.get('data', [])
+                if data_items and len(data_items) > 0:
+                    first_item = data_items[0] if isinstance(data_items[0], dict) else None
+                    if first_item:
+                        first_title = first_item.get('pagetitle', '')
+                        print(f"[DEBUG] IPRbooks AJAX: первый результат: '{first_title[:80]}...'")
+                        # Проверяем, содержит ли первый результат наш запрос
+                        subject_words = [w.lower() for w in subject.split() if len(w) > 2]
+                        title_lower = first_title.lower()
+                        matches = sum(1 for word in subject_words if word in title_lower)
+                        print(f"[DEBUG] IPRbooks AJAX: совпадений ключевых слов в первом результате: {matches}/{len(subject_words)}")
+                        if matches == 0 and len(subject_words) > 0:
+                            print(f"[DEBUG] IPRbooks AJAX: ВНИМАНИЕ: результаты не соответствуют запросу '{subject}'!")
+                            print(f"[DEBUG] IPRbooks AJAX: возможно, API игнорирует параметр поиска или возвращает общие результаты")
+                
                 # Логируем первые несколько ключей с их типами
-                for key in list(data.keys())[:5]:
+                for key in list(data.keys())[:3]:
                     value = data[key]
                     value_type = type(value).__name__
-                    if isinstance(value, str):
+                    if isinstance(value, (list, tuple)):
+                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): длина={len(value)}")
+                    elif isinstance(value, str):
                         preview = value[:100] if len(value) > 100 else value
                         print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): {preview}")
-                    elif isinstance(value, (list, tuple)):
-                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): длина={len(value)}")
-                    elif isinstance(value, dict):
-                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): ключи={list(value.keys())[:5]}")
-                    else:
-                        print(f"[DEBUG] IPRbooks AJAX:   {key} ({value_type}): {str(value)[:100]}")
             elif isinstance(data, list):
                 print(f"[DEBUG] IPRbooks AJAX: ответ - список длиной {len(data)}")
                 if len(data) > 0:
