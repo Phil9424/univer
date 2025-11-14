@@ -1,4 +1,5 @@
 import base64
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
@@ -215,34 +216,61 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
     base_url = "https://rmebrk.kz/"
     results = []
 
+    # Определяем, находимся ли мы на Vercel (serverless)
+    is_vercel = os.getenv('VERCEL') == '1' or 'vercel' in os.getenv('VERCEL_URL', '').lower()
+
     try:
         # Создаем сессию с правильными заголовками
         session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0',
-        })
+
+        # Для Vercel используем более простой User-Agent
+        if is_vercel:
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (compatible; UniBiblio/1.0)',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'ru,en-US;q=0.9,en;q=0.8',
+            })
+        else:
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+                'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0',
+            })
+
+        # Короткие таймауты для Vercel
+        timeout = 8 if is_vercel else 15
 
         # Сначала загружаем главную страницу для получения сессии
-        print(f"[DEBUG] RMЭБ: загрузка главной страницы")
-        main_response = session.get(base_url, timeout=10)
-        main_response.raise_for_status()
+        print(f"[DEBUG] RMЭБ: загрузка главной страницы (Vercel: {is_vercel})")
+        try:
+            main_response = session.get(base_url, timeout=timeout)
+        except Exception as e:
+            print(f"[DEBUG] RMЭБ: ошибка загрузки главной страницы: {e}, пропускаем")
+            return []
+
+        if main_response.status_code != 200:
+            print(f"[DEBUG] RMЭБ: главная страница вернула {main_response.status_code}, пропускаем")
+            return []
+
+        # Небольшая задержка для Vercel
+        if is_vercel:
+            import time
+            time.sleep(0.5)
 
         # Используем AJAX endpoint /test/listinlist как в JavaScript коде сайта
         ajax_url = urljoin(base_url, "/test/listinlist")
         ajax_data = {
             'keyword': subject,
             'secondSearchVar': '',  # Дополнительный поиск (пустой)
-            'pagination': '10',     # Количество результатов
+            'pagination': '5',      # Меньше результатов для Vercel
             'orderby': 'year'       # Сортировка по году
         }
 
@@ -255,43 +283,37 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         }
         session.headers.update(ajax_headers)
 
-        print(f"[DEBUG] RMЭБ: AJAX запрос на {ajax_url} с данными: {ajax_data}")
-        response = session.post(ajax_url, data=ajax_data, timeout=15)
-        print(f"[DEBUG] RMЭБ: AJAX статус: {response.status_code}")
+        print(f"[DEBUG] RMЭБ: AJAX запрос на {ajax_url}")
+        try:
+            response = session.post(ajax_url, data=ajax_data, timeout=timeout)
+        except Exception as e:
+            print(f"[DEBUG] RMЭБ: ошибка AJAX запроса: {e}, пропускаем")
+            return []
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            print(f"[DEBUG] RMЭБ: AJAX вернул {response.status_code}, пропускаем")
+            return []
 
         # Явно указываем кодировку
         response.encoding = 'utf-8'
 
         print(f"[DEBUG] RMЭБ: ответ получен, длина: {len(response.text)} символов")
 
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # Отладочная информация
-        page_title = soup.find('title')
-        print(f"[DEBUG] RMЭБ: заголовок страницы: {page_title.get_text() if page_title else 'Не найден'}")
-
         # Проверяем, что ответ содержит результаты поиска
-        if len(response.text) < 1000:
-            print(f"[DEBUG] RMЭБ: ответ слишком короткий, возможно ошибка")
-            print(f"[DEBUG] RMЭБ: ответ: {response.text}")
+        if len(response.text) < 500:
+            print(f"[DEBUG] RMЭБ: ответ слишком короткий, возможно заблокировано или ошибка")
             return []
 
-        # AJAX endpoint возвращает только HTML с результатами
-        # Ищем контейнер с результатами
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Ищем все элементы книг напрямую
         book_items = soup.find_all('li', {'class': 'list-group-item'})
 
         if not book_items:
-            print(f"[DEBUG] RMЭБ: книги не найдены в AJAX ответе")
-            print(f"[DEBUG] RMЭБ: превью ответа (первые 1000 символов):")
-            print(response.text[:1000])
+            print(f"[DEBUG] RMЭБ: книги не найдены в ответе")
             return []
 
-        print(f"[DEBUG] RMЭБ: найдено {len(book_items)} элементов книг в AJAX ответе")
+        print(f"[DEBUG] RMЭБ: найдено {len(book_items)} элементов книг")
 
         for i, item in enumerate(book_items[:max_results]):
             try:
@@ -1320,7 +1342,9 @@ def fetch_links_for_subject(subject: str) -> Tuple[str, Dict[str, Any]]:
 
     try:
         print(f"[DEBUG] Ищем на RMЭБ: '{subject}'")
-        rmebrk_results = search_rmebrk_results(subject, 3)  # Берем до 3 результатов
+        # На Vercel берем меньше результатов
+        max_rmebrk_results = 2 if os.getenv('VERCEL') == '1' else 3
+        rmebrk_results = search_rmebrk_results(subject, max_rmebrk_results)
         if rmebrk_results:
             print(f"[DEBUG] RMЭБ найдено {len(rmebrk_results)} результатов")
             for result in rmebrk_results[:1]:  # Добавляем только первый результат в links, но все в resources
@@ -1472,7 +1496,8 @@ def get_next_resource():
         # Для RMЭБ запускаем поиск заново
         print(f"[DEBUG] RMЭБ: ищем следующий вариант для '{subject}'")
         try:
-            rmebrk_results = search_rmebrk_results(subject, 10)
+            max_results = 5 if os.getenv('VERCEL') == '1' else 10
+            rmebrk_results = search_rmebrk_results(subject, max_results)
             if not rmebrk_results:
                 return jsonify({"status": "no_more", "message": "Результаты не найдены"})
 
@@ -1492,7 +1517,7 @@ def get_next_resource():
 
         except Exception as e:
             print(f"[DEBUG] RMЭБ ошибка поиска следующего: {e}")
-            return jsonify({"status": "error", "message": f"Ошибка поиска: {e}"})
+            return jsonify({"status": "no_more", "message": "Ошибка при поиске вариантов"})
 
     if source == "urait":
         results = search_urait_multiple_results(subject, 10)
