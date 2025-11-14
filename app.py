@@ -275,65 +275,93 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         for i, form in enumerate(all_forms[:3]):  # Показываем первые 3 формы
             print(f"[DEBUG] RMЭБ: форма {i+1}: action={form.get('action')}, method={form.get('method')}")
 
-        # Ищем форму поиска - пробуем разные варианты
-        search_form = main_soup.find('form')
-        if not search_form:
-            # Пробуем найти форму по другим признакам
-            search_form = main_soup.find('form', {'method': 'post'})
-        if not search_form:
-            print(f"[DEBUG] RMЭБ: форма поиска не найдена на главной странице")
+        # Логируем все input поля на странице
+        all_inputs = main_soup.find_all('input')
+        print(f"[DEBUG] RMЭБ: найдено input полей на странице: {len(all_inputs)}")
+        for i, inp in enumerate(all_inputs[:10]):  # Показываем первые 10
+            inp_type = inp.get('type', 'text')
+            if inp_type != 'hidden':  # Показываем только не-hidden поля
+                print(f"[DEBUG] RMЭБ: input {i+1}: name={inp.get('name')}, id={inp.get('id')}, type={inp_type}, placeholder={inp.get('placeholder')}")
+
+        # Сначала ищем поле поиска по всему документу (не только в формах)
+        search_input = None
+
+        # Пробуем найти поле поиска по разным критериям
+        search_input = main_soup.find('input', {'name': 'search'})
+        if not search_input:
+            search_input = main_soup.find('input', {'id': 'search'})
+        if not search_input:
+            search_input = main_soup.find('input', {'name': 'query'})
+        if not search_input:
+            search_input = main_soup.find('input', {'name': 'q'})
+        if not search_input:
+            search_input = main_soup.find('input', {'placeholder': lambda x: x and ('поиск' in x.lower() or 'search' in x.lower())})
+        if not search_input:
+            # Ищем input с классом, содержащим "search"
+            search_input = main_soup.find('input', {'class': lambda x: x and 'search' in x.lower()})
+        if not search_input:
+            # Ищем любой input type="text" или type="search"
+            text_inputs = main_soup.find_all('input', {'type': lambda x: x in ['text', 'search', None]})
+            if text_inputs:
+                # Берем первый, который не hidden
+                for inp in text_inputs:
+                    if inp.get('type') != 'hidden':
+                        search_input = inp
+                        print(f"[DEBUG] RMЭБ: найден input type=text/search: {search_input.get('name', 'no name')}, placeholder={search_input.get('placeholder')}")
+                        break
+
+        if not search_input:
+            print(f"[DEBUG] RMЭБ: поле поиска не найдено на странице")
             return []
 
-        print(f"[DEBUG] RMЭБ: найдена форма поиска: {search_form.get('action', 'no action')}")
+        print(f"[DEBUG] RMЭБ: найдено поле поиска: name={search_input.get('name')}, id={search_input.get('id')}, placeholder={search_input.get('placeholder')}")
 
-        # Логируем все input поля в форме
-        all_inputs = search_form.find_all('input')
-        print(f"[DEBUG] RMЭБ: найдено input полей в форме: {len(all_inputs)}")
-        for inp in all_inputs:
-            print(f"[DEBUG] RMЭБ: input: name={inp.get('name')}, id={inp.get('id')}, type={inp.get('type')}")
-
-        # Находим поле поиска - пробуем разные варианты
-        search_input = search_form.find('input', {'name': 'search'})
-        if not search_input:
-            search_input = search_form.find('input', {'id': 'search'})
-        if not search_input:
-            search_input = search_form.find('input', {'name': 'query'})
-        if not search_input:
-            search_input = search_form.find('input', {'name': 'q'})
-        if not search_input:
-            # Ищем любой input type="text" в форме
-            text_inputs = search_form.find_all('input', {'type': 'text'})
-            if text_inputs:
-                search_input = text_inputs[0]
-                print(f"[DEBUG] RMЭБ: найден input type=text: {search_input.get('name', 'no name')}")
+        # Теперь ищем форму, которая содержит это поле поиска
+        search_form = search_input.find_parent('form')
+        if search_form:
+            print(f"[DEBUG] RMЭБ: найдена форма поиска: {search_form.get('action', 'no action')}")
+        else:
+            print(f"[DEBUG] RMЭБ: поле поиска не находится в форме, пробуем создать искусственную форму")
+            # Если поле не в форме, попробуем найти кнопку поиска рядом
+            search_button = search_input.find_next('button', {'type': 'submit'})
+            if not search_button:
+                search_button = search_input.find_next('input', {'type': 'submit'})
+            if search_button:
+                print(f"[DEBUG] RMЭБ: найдена кнопка поиска рядом с полем")
+                # Создаем искусственный URL для поиска
+                search_url = f"{base_url.rstrip('/')}/search"
             else:
-                # Ищем input без указанного типа (может быть по умолчанию text)
-                all_form_inputs = search_form.find_all('input')
-                for inp in all_form_inputs:
-                    inp_type = inp.get('type', 'text')  # по умолчанию text
-                    if inp_type in ['text', 'search', None]:
-                        search_input = inp
-                        print(f"[DEBUG] RMЭБ: найден input по умолчанию: {search_input.get('name', 'no name')}, type={inp_type}")
-                        break
-                if not search_input:
-                    print(f"[DEBUG] RMЭБ: поле поиска не найдено")
-                    return []
+                search_url = base_url
+            search_form = None  # Признак, что формы нет
 
         input_name = search_input.get('name')
         if not input_name:
             input_name = search_input.get('id', 'search')
         print(f"[DEBUG] RMЭБ: поле поиска имеет имя: {input_name}")
 
-        # Отправляем POST запрос на поиск
-        search_url = urljoin(base_url, search_form.get('action', ''))
-        if not search_url:
-            search_url = base_url
+        # Отправляем запрос на поиск
+        if search_form:
+            # Есть форма - используем её action
+            search_url = urljoin(base_url, search_form.get('action', ''))
+            if not search_url:
+                search_url = base_url
+            print(f"[DEBUG] RMЭБ: отправка формы поиска на {search_url}")
+        else:
+            # Нет формы - используем искусственный URL
+            search_url = search_url  # Уже установлен выше
+            print(f"[DEBUG] RMЭБ: отправка поиска на {search_url} (без формы)")
 
         search_data = {
             input_name: subject.strip()
         }
 
-        print(f"[DEBUG] RMЭБ: отправка формы поиска на {search_url}")
+        # Добавляем CSRF токен, если он есть в форме
+        if search_form:
+            csrf_token = search_form.find('input', {'name': '_token'})
+            if csrf_token and csrf_token.get('value'):
+                search_data['_token'] = csrf_token['value']
+                print(f"[DEBUG] RMЭБ: добавлен CSRF токен")
+
         try:
             # Сначала пробуем POST
             search_response = session.post(search_url, data=search_data, timeout=timeout)
