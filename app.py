@@ -265,180 +265,92 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             import time
             time.sleep(0.5)
 
-        # Используем AJAX endpoint /test/listinlist как в JavaScript коде сайта
-        ajax_url = urljoin(base_url, "/test/listinlist")
-        ajax_data = {
-            'keyword': subject,
-            'secondSearchVar': '',  # Дополнительный поиск (пустой)
-            'pagination': '5',      # Меньше результатов для Vercel
-            'orderby': 'year'       # Сортировка по году
+        # Вместо AJAX используем обычную отправку формы поиска
+        # Находим форму поиска и отправляем её
+        main_soup = BeautifulSoup(main_response.text, 'html.parser')
+
+        # Ищем форму поиска
+        search_form = main_soup.find('form')
+        if not search_form:
+            print(f"[DEBUG] RMЭБ: форма поиска не найдена на главной странице")
+            return []
+
+        # Находим поле поиска
+        search_input = search_form.find('input', {'name': 'search'})
+        if not search_input:
+            print(f"[DEBUG] RMЭБ: поле поиска не найдено")
+            return []
+
+        # Отправляем POST запрос на поиск
+        search_url = urljoin(base_url, search_form.get('action', ''))
+        if not search_url:
+            search_url = base_url
+
+        search_data = {
+            'search': subject.strip()
         }
 
-        # Добавляем заголовки для AJAX запроса
-        ajax_headers = {
-            'Referer': base_url,
-            'X-Requested-With': 'XMLHttpRequest',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Accept': 'text/html, */*; q=0.01',
-        }
-        session.headers.update(ajax_headers)
-
-        print(f"[DEBUG] RMЭБ: AJAX запрос на {ajax_url}")
+        print(f"[DEBUG] RMЭБ: отправка формы поиска на {search_url}")
         try:
-            response = session.post(ajax_url, data=ajax_data, timeout=timeout)
+            search_response = session.post(search_url, data=search_data, timeout=timeout)
         except Exception as e:
-            print(f"[DEBUG] RMЭБ: ошибка AJAX запроса: {e}, пропускаем")
+            print(f"[DEBUG] RMЭБ: ошибка отправки формы поиска: {e}, пропускаем")
             return []
 
-        if response.status_code != 200:
-            print(f"[DEBUG] RMЭБ: AJAX вернул {response.status_code}, пропускаем")
+        if search_response.status_code != 200:
+            print(f"[DEBUG] RMЭБ: поиск вернул {search_response.status_code}, пропускаем")
             return []
 
-        # Явно указываем кодировку
-        response.encoding = 'utf-8'
+        search_response.encoding = 'utf-8'
+        print(f"[DEBUG] RMЭБ: страница результатов получена, длина: {len(search_response.text)} символов")
 
-        print(f"[DEBUG] RMЭБ: ответ получен, длина: {len(response.text)} символов")
+        # Парсим страницу результатов
+        result_soup = BeautifulSoup(search_response.text, 'html.parser')
 
-        # Проверяем, что ответ содержит результаты поиска
-        if len(response.text) < 500:
-            print(f"[DEBUG] RMЭБ: ответ слишком короткий, возможно заблокировано или ошибка")
+        # Ищем контейнер с результатами (как описано в инструкции пользователя)
+        results_container = result_soup.find('div', {'class': 'col-md-12 col-xs-12 col-sm-12'})
+        if not results_container:
+            print(f"[DEBUG] RMЭБ: контейнер результатов не найден")
             return []
 
-        soup = BeautifulSoup(response.text, 'html.parser')
+        # Ищем все ссылки на книги в результатах
+        book_links = results_container.find_all('a', href=True)
+        print(f"[DEBUG] RMЭБ: найдено {len(book_links)} ссылок в результатах")
 
-        # Ищем все элементы книг напрямую
-        book_items = soup.find_all('li', {'class': 'list-group-item'})
-
-        if not book_items:
-            print(f"[DEBUG] RMЭБ: книги не найдены в ответе")
-            return []
-
-        print(f"[DEBUG] RMЭБ: найдено {len(book_items)} элементов книг")
-
-        for i, item in enumerate(book_items[:max_results]):
+        for i, link in enumerate(book_links[:max_results]):
             try:
-                print(f"[DEBUG] RMЭБ: обрабатываем элемент {i+1}")
-
-                # Получаем название книги
-                title_elem = item.find('span', {'class': 'Title'})
-                if not title_elem:
-                    print(f"[DEBUG] RMЭБ: элемент {i+1} - название не найдено")
+                href = link.get('href')
+                if not href:
                     continue
 
-                title = title_elem.get_text(strip=True)
-                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title}")
+                # Получаем полный URL
+                full_url = urljoin(base_url, href)
 
-                # Убираем выделение жирным (если есть в тексте)
-                title = title.replace('<b style="color:#FF981D; ">', '').replace('</b>', '')
+                # Получаем название книги
+                title = link.get_text(strip=True)
+                if not title:
+                    # Пробуем найти заголовок рядом
+                    parent = link.find_parent()
+                    if parent:
+                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong'])
+                        if title_elem:
+                            title = title_elem.get_text(strip=True)
 
-                # Получаем автора
-                author_elem = item.find('h4', {'class': 'title_result'})
-                author = ""
-                if author_elem and author_elem.get_text(strip=True):
-                    author = author_elem.get_text(strip=True)
-                    print(f"[DEBUG] RMЭБ: элемент {i+1} - автор: {author}")
+                if not title:
+                    continue
 
-                # Ищем ссылку на просмотр
-                view_link = None
-                access_links = item.find('div', {'class': 'result-access-link'})
-                if access_links:
-                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдены ссылки доступа")
-                    # Ищем все li элементы в access_links
-                    all_li = access_links.find_all('li')
-                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдено {len(all_li)} li элементов")
+                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title}, ссылка: {full_url}")
 
-                    for li_elem in all_li:
-                        li_text = li_elem.get_text(strip=True)
-                        print(f"[DEBUG] RMЭБ: элемент {i+1} - текст li: '{li_text}'")
-
-                        # Ищем подчеркнутую ссылку (Просмотр)
-                        if 'просмотр' in li_text.lower() or 'view' in li_text.lower():
-                            print(f"[DEBUG] RMЭБ: элемент {i+1} - найден li с текстом '{li_text}', ищем ссылку")
-                            print(f"[DEBUG] RMЭБ: элемент {i+1} - полный HTML li: {li_elem.prettify()[:500]}")
-
-                            # Сначала пробуем найти обычную ссылку
-                            view_a = li_elem.find('a')
-                            if view_a:
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найден тег a: {view_a}")
-                                if view_a.get('href'):
-                                    view_link = urljoin(base_url, view_a['href'])
-                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена обычная ссылка: {view_link}")
-                                    break
-                                else:
-                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a без href")
-                            else:
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a не найден")
-
-                            # Если обычной ссылки нет, пробуем data-link атрибут
-                            if not view_link and li_elem.get('data-link'):
-                                view_link = urljoin(base_url, li_elem['data-link'])
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена data-link ссылка: {view_link}")
-                                break
-                            elif not view_link:
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - data-link не найден")
-
-                    # Также пробуем найти по стилю или классу
-                    if not view_link:
-                        view_li = access_links.find('li', style=lambda x: x and 'text-decoration: underline' in x)
-                        if not view_li:
-                            view_li = access_links.find('li', {'class': 'nopublic_book'})
-                        if not view_li:
-                            # Ищем любой li с underline в стиле
-                            for li in all_li:
-                                style = li.get('style', '')
-                                if 'underline' in style:
-                                    view_li = li
-                                    break
-
-                        if view_li:
-                            print(f"[DEBUG] RMЭБ: элемент {i+1} - найден li по стилю/классу")
-                            print(f"[DEBUG] RMЭБ: элемент {i+1} - полный HTML li: {view_li.prettify()[:500]}")
-
-                            # Сначала пробуем href
-                            view_a = view_li.find('a')
-                            if view_a:
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найден тег a: {view_a}")
-                                if view_a.get('href'):
-                                    view_link = urljoin(base_url, view_a['href'])
-                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка по стилю: {view_link}")
-                                else:
-                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a без href")
-                            else:
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a не найден")
-
-                            # Затем data-link
-                            if not view_link and view_li.get('data-link'):
-                                view_link = urljoin(base_url, view_li['data-link'])
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена data-link по стилю: {view_link}")
-                            elif not view_link:
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - data-link не найден")
-
-                            # Проверяем onclick или другие атрибуты
-                            if not view_link:
-                                onclick = view_li.get('onclick', '')
-                                data_link = view_li.get('data-link', '')
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - onclick: '{onclick}', data-link: '{data_link}'")
-
-                if view_link:
-                    # Создаем полное название с автором
-                    full_title = title
-                    if author:
-                        full_title = f"{author}. {title}"
-
-                    results.append({
-                        "title": full_title,
-                        "url": view_link,
-                        "status": "success",
-                        "note": "Республиканская Межвузовская Электронная Библиотека - бесплатный доступ к учебникам",
-                        "source": "rmebrk"
-                    })
-                    print(f"[DEBUG] RMЭБ: элемент {i+1} - добавлен результат: {full_title}")
-
-                else:
-                    print(f"[DEBUG] RMЭБ: элемент {i+1} - ссылка не найдена")
+                results.append({
+                    "title": title,
+                    "url": full_url,
+                    "status": "success",
+                    "note": "Республиканская Межвузовская Электронная Библиотека - бесплатный доступ к учебникам",
+                    "source": "rmebrk"
+                })
 
             except Exception as e:
-                print(f"[DEBUG] RMЭБ: ошибка обработки элемента {i+1}: {e}")
+                print(f"[DEBUG] RMЭБ: ошибка обработки ссылки {i+1}: {e}")
                 continue
 
         print(f"[DEBUG] RMЭБ: собрано {len(results)} результатов")
