@@ -349,23 +349,46 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
 
                     for li_elem in all_li:
                         li_text = li_elem.get_text(strip=True)
-                        print(f"[DEBUG] RMЭБ: элемент {i+1} - текст li: {li_text}")
+                        print(f"[DEBUG] RMЭБ: элемент {i+1} - текст li: '{li_text}'")
 
                         # Ищем подчеркнутую ссылку (Просмотр)
                         if 'просмотр' in li_text.lower() or 'view' in li_text.lower():
+                            # Сначала пробуем найти обычную ссылку
                             view_a = li_elem.find('a')
                             if view_a and view_a.get('href'):
                                 view_link = urljoin(base_url, view_a['href'])
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка: {view_link}")
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена обычная ссылка: {view_link}")
+                                break
+                            # Если обычной ссылки нет, пробуем data-link атрибут
+                            elif li_elem.get('data-link'):
+                                view_link = urljoin(base_url, li_elem['data-link'])
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена data-link ссылка: {view_link}")
                                 break
 
-                    # Также пробуем найти по стилю
-                    view_li = access_links.find('li', style=lambda x: x and 'text-decoration: underline' in x)
-                    if view_li and not view_link:
-                        view_a = view_li.find('a')
-                        if view_a and view_a.get('href'):
-                            view_link = urljoin(base_url, view_a['href'])
-                            print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка по стилю: {view_link}")
+                    # Также пробуем найти по стилю или классу
+                    if not view_link:
+                        view_li = access_links.find('li', style=lambda x: x and 'text-decoration: underline' in x)
+                        if not view_li:
+                            view_li = access_links.find('li', {'class': 'nopublic_book'})
+                        if not view_li:
+                            # Ищем любой li с underline в стиле
+                            for li in all_li:
+                                style = li.get('style', '')
+                                if 'underline' in style:
+                                    view_li = li
+                                    break
+
+                        if view_li:
+                            print(f"[DEBUG] RMЭБ: элемент {i+1} - найден li по стилю/классу")
+                            # Сначала пробуем href
+                            view_a = view_li.find('a')
+                            if view_a and view_a.get('href'):
+                                view_link = urljoin(base_url, view_a['href'])
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка по стилю: {view_link}")
+                            # Затем data-link
+                            elif view_li.get('data-link'):
+                                view_link = urljoin(base_url, view_li['data-link'])
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена data-link по стилю: {view_link}")
 
                 if view_link:
                     # Создаем полное название с автором
