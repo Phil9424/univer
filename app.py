@@ -86,7 +86,7 @@ SUBJECT_EXCLUDE_SUBSTRINGS = (
     "деятельност",
     "работ",
 )
-MAX_WORKERS = 16
+MAX_WORKERS = 8
 PLAYWRIGHT_LOCK = Lock() if PLAYWRIGHT_AVAILABLE else None
 
 KNOWN_RESOURCE_RULES = [
@@ -208,6 +208,171 @@ def compute_next_number(ws, start_row: int) -> int:
             if iv > max_num:
                 max_num = iv
     return max_num + 1 if max_num >= 0 else 1
+
+
+def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    """Поиск на РМЭБ (Республиканская Межвузовская Электронная Библиотека)"""
+    base_url = "https://rmebrk.kz/"
+    results = []
+
+    try:
+        # Создаем сессию с правильными заголовками
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+            'Accept-Language': 'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Cache-Control': 'max-age=0',
+        })
+
+        # Сначала загружаем главную страницу для получения сессии
+        print(f"[DEBUG] RMЭБ: загрузка главной страницы")
+        main_response = session.get(base_url, timeout=10)
+        main_response.raise_for_status()
+
+        # Используем AJAX endpoint /test/listinlist как в JavaScript коде сайта
+        ajax_url = urljoin(base_url, "/test/listinlist")
+        ajax_data = {
+            'keyword': subject,
+            'secondSearchVar': '',  # Дополнительный поиск (пустой)
+            'pagination': '10',     # Количество результатов
+            'orderby': 'year'       # Сортировка по году
+        }
+
+        # Добавляем заголовки для AJAX запроса
+        ajax_headers = {
+            'Referer': base_url,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'text/html, */*; q=0.01',
+        }
+        session.headers.update(ajax_headers)
+
+        print(f"[DEBUG] RMЭБ: AJAX запрос на {ajax_url} с данными: {ajax_data}")
+        response = session.post(ajax_url, data=ajax_data, timeout=15)
+        print(f"[DEBUG] RMЭБ: AJAX статус: {response.status_code}")
+
+        response.raise_for_status()
+
+        # Явно указываем кодировку
+        response.encoding = 'utf-8'
+
+        print(f"[DEBUG] RMЭБ: ответ получен, длина: {len(response.text)} символов")
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Отладочная информация
+        page_title = soup.find('title')
+        print(f"[DEBUG] RMЭБ: заголовок страницы: {page_title.get_text() if page_title else 'Не найден'}")
+
+        # Проверяем, что ответ содержит результаты поиска
+        if len(response.text) < 1000:
+            print(f"[DEBUG] RMЭБ: ответ слишком короткий, возможно ошибка")
+            print(f"[DEBUG] RMЭБ: ответ: {response.text}")
+            return []
+
+        # AJAX endpoint возвращает только HTML с результатами
+        # Ищем контейнер с результатами
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        # Ищем все элементы книг напрямую
+        book_items = soup.find_all('li', {'class': 'list-group-item'})
+
+        if not book_items:
+            print(f"[DEBUG] RMЭБ: книги не найдены в AJAX ответе")
+            print(f"[DEBUG] RMЭБ: превью ответа (первые 1000 символов):")
+            print(response.text[:1000])
+            return []
+
+        print(f"[DEBUG] RMЭБ: найдено {len(book_items)} элементов книг в AJAX ответе")
+
+        for i, item in enumerate(book_items[:max_results]):
+            try:
+                print(f"[DEBUG] RMЭБ: обрабатываем элемент {i+1}")
+
+                # Получаем название книги
+                title_elem = item.find('span', {'class': 'Title'})
+                if not title_elem:
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - название не найдено")
+                    continue
+
+                title = title_elem.get_text(strip=True)
+                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title}")
+
+                # Убираем выделение жирным (если есть в тексте)
+                title = title.replace('<b style="color:#FF981D; ">', '').replace('</b>', '')
+
+                # Получаем автора
+                author_elem = item.find('h4', {'class': 'title_result'})
+                author = ""
+                if author_elem and author_elem.get_text(strip=True):
+                    author = author_elem.get_text(strip=True)
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - автор: {author}")
+
+                # Ищем ссылку на просмотр
+                view_link = None
+                access_links = item.find('div', {'class': 'result-access-link'})
+                if access_links:
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдены ссылки доступа")
+                    # Ищем все li элементы в access_links
+                    all_li = access_links.find_all('li')
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдено {len(all_li)} li элементов")
+
+                    for li_elem in all_li:
+                        li_text = li_elem.get_text(strip=True)
+                        print(f"[DEBUG] RMЭБ: элемент {i+1} - текст li: {li_text}")
+
+                        # Ищем подчеркнутую ссылку (Просмотр)
+                        if 'просмотр' in li_text.lower() or 'view' in li_text.lower():
+                            view_a = li_elem.find('a')
+                            if view_a and view_a.get('href'):
+                                view_link = urljoin(base_url, view_a['href'])
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка: {view_link}")
+                                break
+
+                    # Также пробуем найти по стилю
+                    view_li = access_links.find('li', style=lambda x: x and 'text-decoration: underline' in x)
+                    if view_li and not view_link:
+                        view_a = view_li.find('a')
+                        if view_a and view_a.get('href'):
+                            view_link = urljoin(base_url, view_a['href'])
+                            print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка по стилю: {view_link}")
+
+                if view_link:
+                    # Создаем полное название с автором
+                    full_title = title
+                    if author:
+                        full_title = f"{author}. {title}"
+
+                    results.append({
+                        "title": full_title,
+                        "url": view_link,
+                        "status": "success",
+                        "note": "Республиканская Межвузовская Электронная Библиотека - бесплатный доступ к учебникам",
+                        "source": "rmebrk"
+                    })
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - добавлен результат: {full_title}")
+
+                else:
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - ссылка не найдена")
+
+            except Exception as e:
+                print(f"[DEBUG] RMЭБ: ошибка обработки элемента {i+1}: {e}")
+                continue
+
+        print(f"[DEBUG] RMЭБ: собрано {len(results)} результатов")
+        return results
+
+    except Exception as e:
+        print(f"[DEBUG] RMЭБ: ошибка поиска: {e}")
+        return []
 
 
 def search_urait_multiple_results(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
@@ -1154,6 +1319,23 @@ def fetch_links_for_subject(subject: str) -> Tuple[str, Dict[str, Any]]:
             return subject, info
 
     try:
+        print(f"[DEBUG] Ищем на RMЭБ: '{subject}'")
+        rmebrk_results = search_rmebrk_results(subject, 3)  # Берем до 3 результатов
+        if rmebrk_results:
+            print(f"[DEBUG] RMЭБ найдено {len(rmebrk_results)} результатов")
+            for result in rmebrk_results[:1]:  # Добавляем только первый результат в links, но все в resources
+                info["links"].append(result["url"])
+                info["primary_link"] = info["primary_link"] or result["url"]
+                info["status"] = "success"
+                info["note"] = "Найдено на RMЭБ"
+            info["resources"].extend(rmebrk_results)
+        else:
+            print(f"[DEBUG] RMЭБ не найден для: '{subject}'")
+    except Exception as exc:
+        print(f"[DEBUG] Ошибка поиска RMЭБ: {exc}")
+        # Не падаем с ошибкой, продолжаем поиск на других сайтах
+
+    try:
         print(f"[DEBUG] Ищем на Юрайт: '{subject}'")
         urait_results = search_urait_multiple_results(subject, 1)  # Показываем только первый результат
         if urait_results:
@@ -1161,7 +1343,7 @@ def fetch_links_for_subject(subject: str) -> Tuple[str, Dict[str, Any]]:
             result = urait_results[0]
             info["links"].append(result["url"])
             info["resources"].append(result)
-            
+
             info["primary_link"] = result["url"]
             info["status"] = "success"
             info["note"] = "Найдено на Юрайт"
@@ -1286,6 +1468,32 @@ def get_next_resource():
     
     print(f"[DEBUG] Запрос следующего ресурса для '{subject}', текущий: {current_url}")
     
+    if source == "rmebrk":
+        # Для RMЭБ запускаем поиск заново
+        print(f"[DEBUG] RMЭБ: ищем следующий вариант для '{subject}'")
+        try:
+            rmebrk_results = search_rmebrk_results(subject, 10)
+            if not rmebrk_results:
+                return jsonify({"status": "no_more", "message": "Результаты не найдены"})
+
+            # Находим текущий индекс по URL
+            current_index = -1
+            for i, result in enumerate(rmebrk_results):
+                if current_url in result["url"] or result["url"] in current_url:
+                    current_index = i
+                    print(f"[DEBUG] RMЭБ: найден текущий индекс: {i}")
+                    break
+
+            next_index = current_index + 1
+            if next_index < len(rmebrk_results):
+                return jsonify({"status": "success", "resource": rmebrk_results[next_index]})
+            else:
+                return jsonify({"status": "no_more", "message": "Больше вариантов нет"})
+
+        except Exception as e:
+            print(f"[DEBUG] RMЭБ ошибка поиска следующего: {e}")
+            return jsonify({"status": "error", "message": f"Ошибка поиска: {e}"})
+
     if source == "urait":
         results = search_urait_multiple_results(subject, 10)
         # Находим текущий индекс и возвращаем следующий
@@ -1294,13 +1502,13 @@ def get_next_resource():
             if result["url"] == current_url:
                 current_index = i
                 break
-        
+
         next_index = current_index + 1
         if next_index < len(results):
             return jsonify({"status": "success", "resource": results[next_index]})
         else:
             return jsonify({"status": "no_more", "message": "Больше вариантов нет"})
-    
+
     elif source == "iprbookshop":
         # Для IPRbooks запускаем поиск заново через Playwright
         print(f"[DEBUG] IPRbooks: ищем следующий вариант для '{subject}'")
