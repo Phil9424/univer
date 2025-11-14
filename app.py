@@ -353,17 +353,29 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
 
                         # Ищем подчеркнутую ссылку (Просмотр)
                         if 'просмотр' in li_text.lower() or 'view' in li_text.lower():
+                            print(f"[DEBUG] RMЭБ: элемент {i+1} - найден li с текстом '{li_text}', ищем ссылку")
+                            print(f"[DEBUG] RMЭБ: элемент {i+1} - полный HTML li: {li_elem.prettify()[:500]}")
+
                             # Сначала пробуем найти обычную ссылку
                             view_a = li_elem.find('a')
-                            if view_a and view_a.get('href'):
-                                view_link = urljoin(base_url, view_a['href'])
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена обычная ссылка: {view_link}")
-                                break
+                            if view_a:
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найден тег a: {view_a}")
+                                if view_a.get('href'):
+                                    view_link = urljoin(base_url, view_a['href'])
+                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена обычная ссылка: {view_link}")
+                                    break
+                                else:
+                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a без href")
+                            else:
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a не найден")
+
                             # Если обычной ссылки нет, пробуем data-link атрибут
-                            elif li_elem.get('data-link'):
+                            if not view_link and li_elem.get('data-link'):
                                 view_link = urljoin(base_url, li_elem['data-link'])
                                 print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена data-link ссылка: {view_link}")
                                 break
+                            elif not view_link:
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - data-link не найден")
 
                     # Также пробуем найти по стилю или классу
                     if not view_link:
@@ -380,15 +392,32 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
 
                         if view_li:
                             print(f"[DEBUG] RMЭБ: элемент {i+1} - найден li по стилю/классу")
+                            print(f"[DEBUG] RMЭБ: элемент {i+1} - полный HTML li: {view_li.prettify()[:500]}")
+
                             # Сначала пробуем href
                             view_a = view_li.find('a')
-                            if view_a and view_a.get('href'):
-                                view_link = urljoin(base_url, view_a['href'])
-                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка по стилю: {view_link}")
+                            if view_a:
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - найден тег a: {view_a}")
+                                if view_a.get('href'):
+                                    view_link = urljoin(base_url, view_a['href'])
+                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена ссылка по стилю: {view_link}")
+                                else:
+                                    print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a без href")
+                            else:
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - тег a не найден")
+
                             # Затем data-link
-                            elif view_li.get('data-link'):
+                            if not view_link and view_li.get('data-link'):
                                 view_link = urljoin(base_url, view_li['data-link'])
                                 print(f"[DEBUG] RMЭБ: элемент {i+1} - найдена data-link по стилю: {view_link}")
+                            elif not view_link:
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - data-link не найден")
+
+                            # Проверяем onclick или другие атрибуты
+                            if not view_link:
+                                onclick = view_li.get('onclick', '')
+                                data_link = view_li.get('data-link', '')
+                                print(f"[DEBUG] RMЭБ: элемент {i+1} - onclick: '{onclick}', data-link: '{data_link}'")
 
                 if view_link:
                     # Создаем полное название с автором
