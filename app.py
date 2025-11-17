@@ -338,6 +338,15 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         all_col_divs = result_soup.find_all('div', class_=lambda x: x and ('col-md' in str(x) or 'col-xs' in str(x) or 'col-sm' in str(x)))
         print(f"[DEBUG] RMЭБ: найдено div с классами col-md/col-xs/col-sm: {len(all_col_divs)}")
         
+        # Сначала логируем все ссылки на странице для диагностики
+        all_page_links = result_soup.find_all('a', href=True)
+        print(f"[DEBUG] RMЭБ: найдено всего ссылок на странице: {len(all_page_links)}")
+        for i, link in enumerate(all_page_links[:20]):  # Показываем первые 20
+            href = link.get('href', '')
+            text = link.get_text(strip=True)[:50]
+            classes = link.get('class', [])
+            print(f"[DEBUG] RMЭБ: ссылка {i+1}: href={href[:100]}, text={text}, class={classes}")
+        
         # Ищем контейнер с результатами (как описано в инструкции пользователя)
         results_container = result_soup.find('div', {'class': 'col-md-12 col-xs-12 col-sm-12'})
         if not results_container:
@@ -353,26 +362,23 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                 if not results_container:
                     results_container = result_soup.find('div', class_=lambda x: x and ('result' in str(x).lower() or 'book' in str(x).lower() or 'item' in str(x).lower()))
         
-        if not results_container:
-            print(f"[DEBUG] RMЭБ: контейнер результатов не найден, логируем структуру страницы...")
+        if results_container:
+            print(f"[DEBUG] RMЭБ: найден контейнер результатов: {results_container.name}, class={results_container.get('class')}")
+            # Логируем содержимое контейнера
+            container_text = results_container.get_text(strip=True)[:500]
+            print(f"[DEBUG] RMЭБ: текст контейнера (первые 500 символов): {container_text}")
+            container_html = str(results_container)[:1000]
+            print(f"[DEBUG] RMЭБ: HTML контейнера (первые 1000 символов): {container_html}")
+        else:
+            print(f"[DEBUG] RMЭБ: контейнер результатов не найден")
             # Логируем первые 2000 символов HTML для анализа
             print(f"[DEBUG] RMЭБ: превью HTML (первые 2000 символов):")
             print(search_response.text[:2000])
-            
-            # Пробуем найти все ссылки на странице
-            all_links = result_soup.find_all('a', href=True)
-            print(f"[DEBUG] RMЭБ: найдено всего ссылок на странице: {len(all_links)}")
-            for i, link in enumerate(all_links[:10]):
-                href = link.get('href', '')
-                text = link.get_text(strip=True)[:50]
-                print(f"[DEBUG] RMЭБ: ссылка {i+1}: href={href[:80]}, text={text}")
-            
-            # Если есть ссылки, пробуем использовать их напрямую
-            if all_links:
-                print(f"[DEBUG] RMЭБ: используем все ссылки со страницы как результаты")
-                results_container = result_soup  # Используем весь документ
-            else:
-                return []
+        
+        # Если контейнер найден но пустой, или не найден - используем весь документ
+        if not results_container or len(results_container.find_all('a', href=True)) == 0:
+            print(f"[DEBUG] RMЭБ: контейнер пустой или не найден, используем весь документ")
+            results_container = result_soup
 
         # Ищем все ссылки на книги в результатах
         all_links = results_container.find_all('a', href=True)
