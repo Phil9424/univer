@@ -529,12 +529,31 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             
             # Также ищем элементы с data-link атрибутом (например, <li class="nopublic_book" data-link="/book/123">)
             if not view_link:
+                # Ищем во всем элементе результата
                 data_link_elems = item.find_all(attrs={'data-link': True})
                 print(f"[DEBUG] RMЭБ: найдено {len(data_link_elems)} элементов с data-link в элементе {i+1}")
+                
+                # Если не нашли, пробуем искать в result-access-link специально
+                if not data_link_elems:
+                    access_link_div = item.find('div', class_='result-access-link')
+                    if access_link_div:
+                        data_link_elems = access_link_div.find_all(attrs={'data-link': True})
+                        print(f"[DEBUG] RMЭБ: найдено {len(data_link_elems)} элементов с data-link в result-access-link элемента {i+1}")
+                
+                # Если все еще не нашли, ищем элементы с классами nopublic_book, access_book
+                if not data_link_elems:
+                    nopublic_elems = item.find_all('li', class_=lambda x: x and ('nopublic_book' in str(x) or 'access_book' in str(x)))
+                    print(f"[DEBUG] RMЭБ: найдено {len(nopublic_elems)} элементов nopublic_book/access_book в элементе {i+1}")
+                    for nopublic_elem in nopublic_elems:
+                        if nopublic_elem.get('data-link'):
+                            data_link_elems.append(nopublic_elem)
+                            print(f"[DEBUG] RMЭБ: найден элемент с data-link в nopublic_book/access_book")
+                
+                # Обрабатываем найденные элементы
                 for data_link_elem in data_link_elems:
                     data_link = data_link_elem.get('data-link', '')
-                    print(f"[DEBUG] RMЭБ: элемент с data-link: {data_link[:100]}")
-                    if re.match(r'^/book/\d+', data_link):
+                    print(f"[DEBUG] RMЭБ: элемент с data-link: {data_link[:100]}, тег: {data_link_elem.name}, классы: {data_link_elem.get('class', [])}")
+                    if data_link and re.match(r'^/book/\d+', data_link):
                         # Создаем искусственную ссылку из data-link
                         class DataLinkLink:
                             def __init__(self, data_link, elem, item):
