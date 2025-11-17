@@ -556,6 +556,7 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                         else:
                             # Пробуем найти data-link в HTML строке элемента
                             elem_html = str(nopublic_elem)
+                            print(f"[DEBUG] RMЭБ: HTML элемента nopublic_book/access_book (первые 500 символов): {elem_html[:500]}")
                             data_link_match = re.search(r'data-link=["\']([^"\']+)["\']', elem_html)
                             if data_link_match:
                                 data_link_value = data_link_match.group(1)
@@ -563,6 +564,8 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                                 # Создаем временный объект с data-link
                                 nopublic_elem['data-link'] = data_link_value
                                 data_link_elems.append(nopublic_elem)
+                            else:
+                                print(f"[DEBUG] RMЭБ: data-link не найден в HTML строке элемента")
                 
                 # Обрабатываем найденные элементы
                 for data_link_elem in data_link_elems:
