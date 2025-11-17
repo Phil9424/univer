@@ -1153,6 +1153,60 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                             "source": "rmebrk",
                         })
 
+        # Если все еще нет результатов, пробуем глобально найти любые /book/ID в HTML (оригинал + AJAX)
+        if not results:
+            combined_html = ""
+            try:
+                combined_html += (search_response.text or "")
+            except Exception:
+                pass
+            try:
+                combined_html += "\n" + (html_content or "")
+            except Exception:
+                pass
+
+            book_paths = list(dict.fromkeys(re.findall(r'(/book/\d+)', combined_html)))
+            if book_paths:
+                print(f"[DEBUG] RMЭБ: глобально найдено {len(book_paths)} вхождений /book/ID в HTML")
+                # Пытаемся сопоставить найденные /book/ID с заголовками в result_soup (AJAX)
+                ajax_soup = None
+                try:
+                    ajax_soup = BeautifulSoup(html_content, 'html.parser')
+                except Exception:
+                    ajax_soup = None
+
+                for idx, path in enumerate(book_paths[:max_results]):
+                    title = ""
+                    # Ищем элемент с data-link или href, который содержит этот path
+                    candidate_elem = None
+                    if ajax_soup is not None:
+                        candidate_elem = ajax_soup.find(attrs={'data-link': path})
+                        if not candidate_elem:
+                            candidate_elem = ajax_soup.find('a', href=lambda h: h and path in h)
+                        if candidate_elem:
+                            result_item = candidate_elem.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x)) or candidate_elem.find_parent('li')
+                            if result_item:
+                                title_elem = result_item.find('span', class_='Title')
+                                if title_elem:
+                                    title = title_elem.get_text(strip=True)
+                                    title = re.sub(r'<[^>]+>', '', title)
+
+                    if not title:
+                        title = subject.strip() or "Книга РМЭБ"
+
+                    book_url = urljoin(base_url_clean, path)
+                    if any(r.get('url') == book_url for r in results):
+                        continue
+
+                    print(f"[DEBUG] RMЭБ: fallback по /book/ID {idx+1}: {title[:80]} -> {book_url}")
+                    results.append({
+                        "title": title,
+                        "url": book_url,
+                        "status": "success",
+                        "note": "Республиканская Межвузовская Электронная Библиотека (по глобальному поиску /book/ID в HTML)",
+                        "source": "rmebrk",
+                    })
+
         # Если все еще нет результатов, пробуем Playwright (если доступен)
         if not results and PLAYWRIGHT_AVAILABLE:
             print(f"[DEBUG] RMЭБ: HTTP-парсер не нашел прямых ссылок, пробуем Playwright")
