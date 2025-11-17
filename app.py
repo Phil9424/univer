@@ -600,7 +600,39 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             if view_link:
                 all_links.append(view_link)
             else:
-                print(f"[DEBUG] RMЭБ: ссылка /book/ не найдена в элементе {i+1}, ищем data-id")
+                print(f"[DEBUG] RMЭБ: ссылка /book/ не найдена в элементе {i+1}, ищем data-id и data-link в HTML")
+            
+            # Если не нашли ссылку, ищем data-link и data-id во всем HTML элемента результата
+            if not view_link:
+                item_html = str(item)
+                # Ищем data-link в HTML строке всего элемента результата
+                data_link_match = re.search(r'data-link=["\']([^"\']+)["\']', item_html)
+                if data_link_match:
+                    data_link_value = data_link_match.group(1)
+                    print(f"[DEBUG] RMЭБ: найден data-link в HTML элемента результата {i+1}: {data_link_value}")
+                    if re.match(r'^/book/\d+', data_link_value):
+                        # Создаем искусственную ссылку из data-link
+                        class DataLinkLink:
+                            def __init__(self, data_link, item):
+                                self.data_link = data_link
+                                self.item = item
+                                self.href = data_link
+                            def get(self, attr):
+                                if attr == 'href':
+                                    return self.href
+                                return ''
+                            def get_text(self, strip=False):
+                                title_elem = self.item.find('span', class_='Title')
+                                if title_elem:
+                                    title = title_elem.get_text(strip=strip)
+                                    title = re.sub(r'<[^>]+>', '', title)
+                                    return title
+                                return ''
+                            def find_parent(self, *args):
+                                return self.item if args else None
+                        view_link = DataLinkLink(data_link_value, item)
+                        all_links.append(view_link)
+                        print(f"[DEBUG] RMЭБ: создана ссылка из data-link в HTML: {data_link_value}")
             
             # Также проверяем элементы с data-id - можем построить URL
             # Ищем в разных местах: в result-access-link, search-items и т.д.
@@ -632,6 +664,14 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                     data_id_elem = search_items
                     book_id = search_items.get('data-id', '')
                     print(f"[DEBUG] RMЭБ: найден data-id в search-items элемента {i+1}: {book_id}")
+            
+            # Если все еще не нашли, ищем data-id в HTML строке элемента результата
+            if not book_id:
+                item_html = str(item)
+                data_id_match = re.search(r'data-id=["\'](\d+)["\']', item_html)
+                if data_id_match:
+                    book_id = data_id_match.group(1)
+                    print(f"[DEBUG] RMЭБ: найден data-id в HTML строке элемента {i+1}: {book_id}")
             
             # Если не нашли data-id, пробуем извлечь из onclick или других мест
             if not book_id:
