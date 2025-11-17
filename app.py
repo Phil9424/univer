@@ -412,26 +412,26 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         
         print(f"[DEBUG] RMЭБ: после фильтрации осталось {len(book_links)} ссылок на книги")
 
-        for i, link in enumerate(book_links[:max_results * 2]):  # Берем больше для фильтрации дубликатов
+        for i, link in enumerate(book_links[:max_results * 3]):  # Берем больше для фильтрации
             try:
                 href = link.get('href')
                 if not href:
                     continue
 
-                # Получаем полный URL
-                full_url = urljoin(base_url_clean, href)
+                # Получаем полный URL страницы книги
+                book_page_url = urljoin(base_url_clean, href)
                 
                 # Пропускаем дубликаты
-                if any(r.get('url') == full_url for r in results):
+                if any(r.get('url') == book_page_url for r in results):
                     continue
 
                 # Получаем название книги
                 title = link.get_text(strip=True)
                 if not title or len(title) < 3:
                     # Пробуем найти заголовок рядом
-                    parent = link.find_parent(['li', 'div', 'article', 'section'])
+                    parent = link.find_parent(['li', 'div', 'article', 'section', 'tr', 'td'])
                     if parent:
-                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p'])
+                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p', 'a'])
                         if title_elem:
                             title = title_elem.get_text(strip=True)
                 
@@ -444,11 +444,75 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                     print(f"[DEBUG] RMЭБ: элемент {i+1} - пропущен (нет названия), href={href[:80]}")
                     continue
 
-                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title[:80]}, ссылка: {full_url[:100]}")
+                # Ищем ссылку на просмотр - сначала на странице результатов рядом со ссылкой
+                view_url = None
+                parent_elem = link.find_parent(['li', 'div', 'tr', 'td', 'article'])
+                if parent_elem:
+                    # Ищем ссылку с текстом "Просмотр", "Читать", "View" и т.д.
+                    view_links = parent_elem.find_all('a', href=True)
+                    for view_link in view_links:
+                        view_text = view_link.get_text(strip=True).lower()
+                        view_href = view_link.get('href', '')
+                        if any(word in view_text for word in ['просмотр', 'читать', 'view', 'read', 'открыть', 'open']):
+                            view_url = urljoin(base_url_clean, view_href)
+                            print(f"[DEBUG] RMЭБ: найдена ссылка на просмотр рядом: {view_url[:100]}")
+                            break
+                    
+                    # Если не нашли по тексту, ищем кнопку или ссылку с data-атрибутами
+                    if not view_url:
+                        for view_link in view_links:
+                            view_href = view_link.get('href', '')
+                            # Пропускаем саму ссылку на книгу
+                            if view_href == href:
+                                continue
+                            # Если есть ссылка, отличная от основной - возможно это просмотр
+                            if view_href and view_href != href and not view_href.startswith('#'):
+                                # Проверяем, не служебная ли это ссылка
+                                if not any(skip in view_href.lower() for skip in ['/search', '/language', '/login', '/register']):
+                                    view_url = urljoin(base_url_clean, view_href)
+                                    print(f"[DEBUG] RMЭБ: найдена альтернативная ссылка: {view_url[:100]}")
+                                    break
+
+                # Если не нашли ссылку на просмотр на странице результатов, переходим на страницу книги
+                if not view_url:
+                    try:
+                        print(f"[DEBUG] RMЭБ: переход на страницу книги: {book_page_url[:100]}")
+                        book_response = session.get(book_page_url, timeout=timeout)
+                        if book_response.status_code == 200:
+                            book_soup = BeautifulSoup(book_response.text, 'html.parser')
+                            
+                            # Ищем ссылку на просмотр на странице книги
+                            view_links = book_soup.find_all('a', href=True)
+                            for view_link in view_links:
+                                view_text = view_link.get_text(strip=True).lower()
+                                view_href = view_link.get('href', '')
+                                if any(word in view_text for word in ['просмотр', 'читать', 'view', 'read', 'открыть', 'open']):
+                                    view_url = urljoin(base_url_clean, view_href)
+                                    print(f"[DEBUG] RMЭБ: найдена ссылка на просмотр на странице книги: {view_url[:100]}")
+                                    break
+                            
+                            # Если не нашли по тексту, ищем кнопку или ссылку с определенными классами
+                            if not view_url:
+                                # Ищем ссылки с классами, содержащими "view", "read", "open"
+                                for view_link in view_links:
+                                    view_classes = view_link.get('class', [])
+                                    view_href = view_link.get('href', '')
+                                    if any(word in str(view_classes).lower() for word in ['view', 'read', 'open', 'btn']):
+                                        if view_href and not view_href.startswith('#') and '/search' not in view_href.lower():
+                                            view_url = urljoin(base_url_clean, view_href)
+                                            print(f"[DEBUG] RMЭБ: найдена ссылка по классу: {view_url[:100]}")
+                                            break
+                    except Exception as e:
+                        print(f"[DEBUG] RMЭБ: ошибка при переходе на страницу книги: {e}")
+
+                # Используем ссылку на просмотр, если нашли, иначе ссылку на страницу книги
+                final_url = view_url if view_url else book_page_url
+                
+                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title[:80]}, ссылка: {final_url[:100]}")
 
                 results.append({
                     "title": title,
-                    "url": full_url,
+                    "url": final_url,
                     "status": "success",
                     "note": "Республиканская Межвузовская Электронная Библиотека - бесплатный доступ к учебникам",
                     "source": "rmebrk"
