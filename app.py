@@ -265,114 +265,55 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             import time
             time.sleep(0.5)
 
-        # Вместо AJAX используем обычную отправку формы поиска
-        # Находим форму поиска и отправляем её
-        main_soup = BeautifulSoup(main_response.text, 'html.parser')
-
-        # Логируем все найденные формы для отладки
-        all_forms = main_soup.find_all('form')
-        print(f"[DEBUG] RMЭБ: найдено форм на странице: {len(all_forms)}")
-        for i, form in enumerate(all_forms[:3]):  # Показываем первые 3 формы
-            print(f"[DEBUG] RMЭБ: форма {i+1}: action={form.get('action')}, method={form.get('method')}")
-
-        # Логируем все input поля на странице
-        all_inputs = main_soup.find_all('input')
-        print(f"[DEBUG] RMЭБ: найдено input полей на странице: {len(all_inputs)}")
-        for i, inp in enumerate(all_inputs[:10]):  # Показываем первые 10
-            inp_type = inp.get('type', 'text')
-            if inp_type != 'hidden':  # Показываем только не-hidden поля
-                print(f"[DEBUG] RMЭБ: input {i+1}: name={inp.get('name')}, id={inp.get('id')}, type={inp_type}, placeholder={inp.get('placeholder')}")
-
-        # Сначала ищем поле поиска по всему документу (не только в формах)
-        search_input = None
-
-        # Пробуем найти поле поиска по разным критериям
-        search_input = main_soup.find('input', {'name': 'search'})
-        if not search_input:
-            search_input = main_soup.find('input', {'id': 'search'})
-        if not search_input:
-            search_input = main_soup.find('input', {'name': 'query'})
-        if not search_input:
-            search_input = main_soup.find('input', {'name': 'q'})
-        if not search_input:
-            search_input = main_soup.find('input', {'placeholder': lambda x: x and ('поиск' in x.lower() or 'search' in x.lower())})
-        if not search_input:
-            # Ищем input с классом, содержащим "search"
-            search_input = main_soup.find('input', {'class': lambda x: x and 'search' in x.lower()})
-        if not search_input:
-            # Ищем любой input type="text" или type="search"
-            text_inputs = main_soup.find_all('input', {'type': lambda x: x in ['text', 'search', None]})
-            if text_inputs:
-                # Берем первый, который не hidden
-                for inp in text_inputs:
-                    if inp.get('type') != 'hidden':
-                        search_input = inp
-                        print(f"[DEBUG] RMЭБ: найден input type=text/search: {search_input.get('name', 'no name')}, placeholder={search_input.get('placeholder')}")
-                        break
-
-        if not search_input:
-            print(f"[DEBUG] RMЭБ: поле поиска не найдено на странице")
-            return []
-
-        print(f"[DEBUG] RMЭБ: найдено поле поиска: name={search_input.get('name')}, id={search_input.get('id')}, placeholder={search_input.get('placeholder')}")
-
-        # Теперь ищем форму, которая содержит это поле поиска
-        search_form = search_input.find_parent('form')
-        if search_form:
-            print(f"[DEBUG] RMЭБ: найдена форма поиска: {search_form.get('action', 'no action')}")
-        else:
-            print(f"[DEBUG] RMЭБ: поле поиска не находится в форме, пробуем создать искусственную форму")
-            # Если поле не в форме, попробуем найти кнопку поиска рядом
-            search_button = search_input.find_next('button', {'type': 'submit'})
-            if not search_button:
-                search_button = search_input.find_next('input', {'type': 'submit'})
-            if search_button:
-                print(f"[DEBUG] RMЭБ: найдена кнопка поиска рядом с полем")
-                # Создаем искусственный URL для поиска
-                search_url = f"{base_url.rstrip('/')}/search"
-            else:
-                search_url = base_url
-            search_form = None  # Признак, что формы нет
-
-        input_name = search_input.get('name')
-        if not input_name:
-            input_name = search_input.get('id', 'search')
-        print(f"[DEBUG] RMЭБ: поле поиска имеет имя: {input_name}")
-
-        # Отправляем запрос на поиск
-        if search_form:
-            # Есть форма - используем её action
-            search_url = urljoin(base_url, search_form.get('action', ''))
-            if not search_url:
-                search_url = base_url
-            print(f"[DEBUG] RMЭБ: отправка формы поиска на {search_url}")
-        else:
-            # Нет формы - используем искусственный URL
-            search_url = search_url  # Уже установлен выше
-            print(f"[DEBUG] RMЭБ: отправка поиска на {search_url} (без формы)")
-
+        # Прямой подход: используем поисковый URL с параметром 'search'
+        # На основе описания пользователя: поле name="search", id="_searchinput"
         search_data = {
-            input_name: subject.strip()
+            'search': subject.strip()
         }
 
-        # Добавляем CSRF токен, если он есть в форме
-        if search_form:
-            csrf_token = search_form.find('input', {'name': '_token'})
-            if csrf_token and csrf_token.get('value'):
-                search_data['_token'] = csrf_token['value']
-                print(f"[DEBUG] RMЭБ: добавлен CSRF токен")
+        print(f"[DEBUG] RMЭБ: пробуем прямой POST на {base_url}/search с параметром 'search'")
 
         try:
-            # Сначала пробуем POST
-            search_response = session.post(search_url, data=search_data, timeout=timeout)
+            # Сначала пробуем POST на /search
+            search_response = session.post(f"{base_url}/search", data=search_data, timeout=timeout)
+
             if search_response.status_code != 200 or len(search_response.text) < 1000:
-                print(f"[DEBUG] RMЭБ: POST вернул {search_response.status_code}, пробуем GET")
+                print(f"[DEBUG] RMЭБ: POST вернул {search_response.status_code}, длина: {len(search_response.text)}, пробуем GET")
                 # Если POST не сработал, пробуем GET с параметрами в URL
-                search_url_get = f"{base_url.rstrip('/')}/search?{input_name}={quote_plus(subject.strip())}"
+                search_url_get = f"{base_url}/search?search={quote_plus(subject.strip())}"
                 print(f"[DEBUG] RMЭБ: пробуем GET запрос: {search_url_get}")
                 search_response = session.get(search_url_get, timeout=timeout)
+
+            if search_response.status_code != 200 or len(search_response.text) < 1000:
+                print(f"[DEBUG] RMЭБ: поиск не удался, пробуем анализ главной страницы")
+                # Анализируем главную страницу для поиска поля
+                main_soup = BeautifulSoup(main_response.text, 'html.parser')
+
+                # Логируем все input поля на странице
+                all_inputs = main_soup.find_all('input')
+                print(f"[DEBUG] RMЭБ: найдено input полей на странице: {len(all_inputs)}")
+                for i, inp in enumerate(all_inputs[:15]):  # Показываем первые 15
+                    inp_type = inp.get('type', 'text')
+                    print(f"[DEBUG] RMЭБ: input {i+1}: name={inp.get('name')}, id={inp.get('id')}, type={inp_type}, placeholder={inp.get('placeholder')}")
+
+                # Ищем конкретное поле _searchinput или поле с name="search"
+                search_input = main_soup.find('input', {'id': '_searchinput'})
+                if not search_input:
+                    search_input = main_soup.find('input', {'name': 'search'})
+
+                if search_input:
+                    print(f"[DEBUG] RMЭБ: найдено поле поиска: name={search_input.get('name')}, id={search_input.get('id')}")
+                    # Пробуем POST с правильным параметром
+                    param_name = search_input.get('name') or 'search'
+                    search_data = {param_name: subject.strip()}
+                    search_response = session.post(f"{base_url}/search", data=search_data, timeout=timeout)
+                    print(f"[DEBUG] RMЭБ: повторный POST с параметром '{param_name}'")
+                else:
+                    print(f"[DEBUG] RMЭБ: поле поиска не найдено, пропускаем")
+                    return []
+
         except Exception as e:
-            print(f"[DEBUG] RMЭБ: ошибка отправки формы поиска: {e}, пропускаем")
+            print(f"[DEBUG] RMЭБ: ошибка поиска: {e}, пропускаем")
             return []
 
         if search_response.status_code != 200:
