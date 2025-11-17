@@ -512,20 +512,53 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         for i, item in enumerate(result_items):
             print(f"[DEBUG] RMЭБ: элемент результата {i+1}:")
             
-            # Ищем все ссылки внутри элемента результата
+            # Ищем все ссылки внутри элемента результата (обычные <a> теги)
             item_links = item.find_all('a', href=True)
-            print(f"[DEBUG] RMЭБ: найдено {len(item_links)} ссылок в элементе {i+1}")
+            print(f"[DEBUG] RMЭБ: найдено {len(item_links)} ссылок <a> в элементе {i+1}")
             
-            # Ищем ссылку "Просмотр" с /book/{id}
+            # Ищем ссылку "Просмотр" с /book/{id} в обычных ссылках
             view_link = None
             for link in item_links:
                 href = link.get('href', '')
                 link_text = link.get_text(strip=True).lower()
-                print(f"[DEBUG] RMЭБ: ссылка в элементе {i+1}: href={href[:100]}, text={link_text[:50]}")
+                print(f"[DEBUG] RMЭБ: ссылка <a> в элементе {i+1}: href={href[:100]}, text={link_text[:50]}")
                 if re.match(r'^/book/\d+', href):
                     view_link = link
-                    print(f"[DEBUG] RMЭБ: найдена ссылка на книгу в результате: {href}")
+                    print(f"[DEBUG] RMЭБ: найдена ссылка на книгу в <a>: {href}")
                     break
+            
+            # Также ищем элементы с data-link атрибутом (например, <li class="nopublic_book" data-link="/book/123">)
+            if not view_link:
+                data_link_elems = item.find_all(attrs={'data-link': True})
+                print(f"[DEBUG] RMЭБ: найдено {len(data_link_elems)} элементов с data-link в элементе {i+1}")
+                for data_link_elem in data_link_elems:
+                    data_link = data_link_elem.get('data-link', '')
+                    print(f"[DEBUG] RMЭБ: элемент с data-link: {data_link[:100]}")
+                    if re.match(r'^/book/\d+', data_link):
+                        # Создаем искусственную ссылку из data-link
+                        class DataLinkLink:
+                            def __init__(self, data_link, elem, item):
+                                self.data_link = data_link
+                                self.elem = elem
+                                self.item = item
+                                self.href = data_link
+                            def get(self, attr):
+                                if attr == 'href':
+                                    return self.href
+                                return self.elem.get(attr, '') if hasattr(self.elem, 'get') else ''
+                            def get_text(self, strip=False):
+                                # Пробуем найти название книги в элементе результата
+                                title_elem = self.item.find('span', class_='Title')
+                                if title_elem:
+                                    title = title_elem.get_text(strip=strip)
+                                    title = re.sub(r'<[^>]+>', '', title)
+                                    return title
+                                return ''
+                            def find_parent(self, *args):
+                                return self.item if args else None
+                        view_link = DataLinkLink(data_link, data_link_elem, item)
+                        print(f"[DEBUG] RMЭБ: найдена ссылка на книгу в data-link: {data_link}")
+                        break
             
             if view_link:
                 all_links.append(view_link)
