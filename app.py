@@ -566,6 +566,36 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                                 data_link_elems.append(nopublic_elem)
                             else:
                                 print(f"[DEBUG] RMЭБ: data-link не найден в HTML строке элемента")
+                                
+                                # Проверяем onclick на элементе access_book/nopublic_book
+                                onclick_value = nopublic_elem.get('onclick', '')
+                                if onclick_value:
+                                    print(f"[DEBUG] RMЭБ: найден onclick на access_book/nopublic_book: {onclick_value[:200]}")
+                                    # Ищем book ID в onclick (может быть /book/123 или просто число)
+                                    book_match = re.search(r'/book/(\d+)', onclick_value)
+                                    if not book_match:
+                                        book_match = re.search(r'book[Ii]d["\']?\s*[:=]\s*["\']?(\d+)', onclick_value)
+                                    if not book_match:
+                                        book_match = re.search(r'["\'](\d{4,})["\']', onclick_value)  # Ищем длинные числа
+                                    if book_match:
+                                        book_id_from_onclick = book_match.group(1)
+                                        print(f"[DEBUG] RMЭБ: найден book_id из onclick access_book: {book_id_from_onclick}")
+                                        # Создаем data-link из найденного ID
+                                        nopublic_elem['data-link'] = f"/book/{book_id_from_onclick}"
+                                        data_link_elems.append(nopublic_elem)
+                                
+                                # Проверяем родительские элементы на наличие data-id
+                                parent = nopublic_elem.find_parent()
+                                parent_levels_checked = 0
+                                while parent and parent_levels_checked < 3:  # Проверяем до 3 уровней вверх
+                                    parent_data_id = parent.get('data-id', '') if hasattr(parent, 'get') else ''
+                                    if parent_data_id:
+                                        print(f"[DEBUG] RMЭБ: найден data-id в родительском элементе access_book (уровень {parent_levels_checked+1}): {parent_data_id}")
+                                        nopublic_elem['data-link'] = f"/book/{parent_data_id}"
+                                        data_link_elems.append(nopublic_elem)
+                                        break
+                                    parent = parent.find_parent() if hasattr(parent, 'find_parent') else None
+                                    parent_levels_checked += 1
                 
                 # Обрабатываем найденные элементы
                 for data_link_elem in data_link_elems:
@@ -605,46 +635,108 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             # Если не нашли ссылку, ищем data-link и data-id во всем HTML элемента результата
             if not view_link:
                 item_html = str(item)
+                print(f"[DEBUG] RMЭБ: HTML элемента результата {i+1} (первые 2000 символов): {item_html[:2000]}")
+                
                 # Ищем data-link в HTML строке всего элемента результата
-                data_link_match = re.search(r'data-link=["\']([^"\']+)["\']', item_html)
-                if data_link_match:
-                    data_link_value = data_link_match.group(1)
-                    print(f"[DEBUG] RMЭБ: найден data-link в HTML элемента результата {i+1}: {data_link_value}")
-                    if re.match(r'^/book/\d+', data_link_value):
-                        # Создаем искусственную ссылку из data-link
-                        class DataLinkLink:
-                            def __init__(self, data_link, item):
-                                self.data_link = data_link
-                                self.item = item
-                                self.href = data_link
-                            def get(self, attr):
-                                if attr == 'href':
-                                    return self.href
-                                return ''
-                            def get_text(self, strip=False):
-                                title_elem = self.item.find('span', class_='Title')
-                                if title_elem:
-                                    title = title_elem.get_text(strip=strip)
-                                    title = re.sub(r'<[^>]+>', '', title)
-                                    return title
-                                return ''
-                            def find_parent(self, *args):
-                                return self.item if args else None
-                        view_link = DataLinkLink(data_link_value, item)
-                        all_links.append(view_link)
-                        print(f"[DEBUG] RMЭБ: создана ссылка из data-link в HTML: {data_link_value}")
+                data_link_matches = re.findall(r'data-link=["\']([^"\']+)["\']', item_html)
+                if data_link_matches:
+                    for data_link_value in data_link_matches:
+                        print(f"[DEBUG] RMЭБ: найден data-link в HTML элемента результата {i+1}: {data_link_value}")
+                        if re.match(r'^/book/\d+', data_link_value):
+                            # Создаем искусственную ссылку из data-link
+                            class DataLinkLink:
+                                def __init__(self, data_link, item):
+                                    self.data_link = data_link
+                                    self.item = item
+                                    self.href = data_link
+                                def get(self, attr):
+                                    if attr == 'href':
+                                        return self.href
+                                    return ''
+                                def get_text(self, strip=False):
+                                    title_elem = self.item.find('span', class_='Title')
+                                    if title_elem:
+                                        title = title_elem.get_text(strip=strip)
+                                        title = re.sub(r'<[^>]+>', '', title)
+                                        return title
+                                    return ''
+                                def find_parent(self, *args):
+                                    return self.item if args else None
+                            view_link = DataLinkLink(data_link_value, item)
+                            all_links.append(view_link)
+                            print(f"[DEBUG] RMЭБ: создана ссылка из data-link в HTML: {data_link_value}")
+                            break
+                
+                # Если не нашли data-link, ищем в исходном HTML контенте вокруг этого элемента
+                if not view_link:
+                    # Пробуем найти элемент в исходном HTML по его тексту
+                    title_elem = item.find('span', class_='Title')
+                    if title_elem:
+                        # Получаем текст без HTML тегов
+                        title_text_raw = title_elem.get_text(strip=True)
+                        title_text = re.sub(r'<[^>]+>', '', title_text_raw)[:50]  # Первые 50 символов названия без тегов
+                        if title_text:
+                            # Ищем этот текст в исходном HTML и ищем data-link/data-id рядом
+                            # Убираем специальные символы для regex
+                            title_words = title_text.split()[:5]  # Первые 5 слов
+                            if title_words:
+                                # Ищем любое из слов названия
+                                title_pattern = '|'.join(re.escape(word) for word in title_words if len(word) > 3)
+                                if title_pattern:
+                                    # Ищем паттерн: любое слово из названия, затем data-link или data-id в пределах 3000 символов
+                                    pattern = rf'(?:{title_pattern}).*?(?:data-link=["\']([^"\']+)["\']|data-id=["\'](\d+)["\']).*?'
+                                    match = re.search(pattern, html_content, re.DOTALL | re.IGNORECASE)
+                                    if match:
+                                        if match.group(1):  # data-link
+                                            data_link_value = match.group(1)
+                                            if re.match(r'^/book/\d+', data_link_value):
+                                                print(f"[DEBUG] RMЭБ: найден data-link в исходном HTML по названию: {data_link_value}")
+                                                class DataLinkLink:
+                                                    def __init__(self, data_link, item):
+                                                        self.data_link = data_link
+                                                        self.item = item
+                                                        self.href = data_link
+                                                    def get(self, attr):
+                                                        if attr == 'href':
+                                                            return self.href
+                                                        return ''
+                                                    def get_text(self, strip=False):
+                                                        title_elem = self.item.find('span', class_='Title')
+                                                        if title_elem:
+                                                            title = title_elem.get_text(strip=strip)
+                                                            title = re.sub(r'<[^>]+>', '', title)
+                                                            return title
+                                                        return ''
+                                                    def find_parent(self, *args):
+                                                        return self.item if args else None
+                                                view_link = DataLinkLink(data_link_value, item)
+                                                all_links.append(view_link)
+                                        elif match.group(2):  # data-id
+                                            book_id = match.group(2)
+                                            print(f"[DEBUG] RMЭБ: найден data-id в исходном HTML по названию: {book_id}")
+                                            # book_id будет обработан ниже
+                
+                if not view_link:
+                    print(f"[DEBUG] RMЭБ: data-link не найден в HTML элемента результата {i+1}")
             
             # Также проверяем элементы с data-id - можем построить URL
             # Ищем в разных местах: в result-access-link, search-items и т.д.
             data_id_elem = None
             book_id = None
             
-            # Сначала ищем data-id в любом месте элемента результата
-            all_data_id_elems = item.find_all(attrs={'data-id': True})
-            if all_data_id_elems:
-                data_id_elem = all_data_id_elems[0]
-                book_id = data_id_elem.get('data-id', '')
-                print(f"[DEBUG] RMЭБ: найден data-id напрямую в элементе {i+1}: {book_id}")
+            # Сначала проверяем сам элемент list-group-item на наличие data-id
+            if item.get('data-id'):
+                book_id = item.get('data-id', '')
+                data_id_elem = item
+                print(f"[DEBUG] RMЭБ: найден data-id на самом list-group-item элементе {i+1}: {book_id}")
+            
+            # Затем ищем data-id в любом месте элемента результата (включая дочерние элементы)
+            if not book_id:
+                all_data_id_elems = item.find_all(attrs={'data-id': True})
+                if all_data_id_elems:
+                    data_id_elem = all_data_id_elems[0]
+                    book_id = data_id_elem.get('data-id', '')
+                    print(f"[DEBUG] RMЭБ: найден data-id напрямую в элементе {i+1}: {book_id}")
             
             # Если не нашли, ищем в result-access-link
             if not book_id:
@@ -668,10 +760,24 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             # Если все еще не нашли, ищем data-id в HTML строке элемента результата
             if not book_id:
                 item_html = str(item)
-                data_id_match = re.search(r'data-id=["\'](\d+)["\']', item_html)
-                if data_id_match:
-                    book_id = data_id_match.group(1)
-                    print(f"[DEBUG] RMЭБ: найден data-id в HTML строке элемента {i+1}: {book_id}")
+                # Ищем все вхождения data-id в HTML
+                data_id_matches = re.findall(r'data-id=["\'](\d+)["\']', item_html)
+                if data_id_matches:
+                    book_id = data_id_matches[0]  # Берем первый найденный
+                    print(f"[DEBUG] RMЭБ: найден data-id в HTML строке элемента {i+1}: {book_id} (всего найдено: {len(data_id_matches)})")
+                else:
+                    print(f"[DEBUG] RMЭБ: data-id не найден в HTML строке элемента {i+1}, проверяем паттерны...")
+                    # Пробуем другие паттерны
+                    alt_patterns = [
+                        r'data-id=(\d+)',  # Без кавычек
+                        r'data-id["\']\s*:\s*["\'](\d+)["\']',  # В JavaScript
+                    ]
+                    for pattern in alt_patterns:
+                        matches = re.findall(pattern, item_html)
+                        if matches:
+                            book_id = matches[0]
+                            print(f"[DEBUG] RMЭБ: найден data-id альтернативным паттерном в элементе {i+1}: {book_id}")
+                            break
             
             # Если не нашли data-id, пробуем извлечь из onclick или других мест
             if not book_id:
