@@ -329,6 +329,105 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         print(f"[DEBUG] RMЭБ: страница результатов получена, длина: {len(search_response.text)} символов")
         print(f"[DEBUG] RMЭБ: URL результатов: {search_response.url}")
 
+        # Ищем AJAX endpoint в JavaScript коде страницы
+        # Результаты могут загружаться динамически через AJAX
+        ajax_endpoint = None
+        ajax_params = {}
+        
+        # Ищем в JavaScript коде упоминания AJAX запросов
+        if '/test/listinlist' in search_response.text or '/api/' in search_response.text or '/ajax/' in search_response.text:
+            # Пробуем найти endpoint в тексте страницы
+            # Ищем паттерны типа /test/listinlist, /api/search, /ajax/search и т.д.
+            endpoint_patterns = [
+                r'["\'](/test/[^"\']+)["\']',
+                r'["\'](/api/[^"\']+)["\']',
+                r'["\'](/ajax/[^"\']+)["\']',
+                r'url\s*[:=]\s*["\']([^"\']+)["\']',
+                r'action\s*[:=]\s*["\']([^"\']+)["\']',
+            ]
+            
+            for pattern in endpoint_patterns:
+                matches = re.findall(pattern, search_response.text)
+                if matches:
+                    potential_endpoint = matches[0]
+                    if any(word in potential_endpoint.lower() for word in ['search', 'list', 'book', 'publication', 'resource']):
+                        ajax_endpoint = potential_endpoint
+                        print(f"[DEBUG] RMЭБ: найден потенциальный AJAX endpoint: {ajax_endpoint}")
+                        break
+        
+        # Пробуем известный AJAX endpoint /test/listinlist
+        ajax_tried = False
+        if not ajax_endpoint:
+            ajax_endpoint = '/test/listinlist'
+            print(f"[DEBUG] RMЭБ: используем известный AJAX endpoint: {ajax_endpoint}")
+        
+        # Если нашли AJAX endpoint, пробуем использовать его
+        if ajax_endpoint:
+            try:
+                ajax_url = urljoin(base_url_clean, ajax_endpoint)
+                print(f"[DEBUG] RMЭБ: пробуем AJAX запрос на {ajax_url}")
+                
+                # Пробуем разные варианты параметров (сначала form-data, потом JSON)
+                ajax_data_variants = [
+                    # Form data варианты
+                    {'keyword': subject.strip(), 'secondSearchVar': '', 'pagination': 1, 'orderby': ''},
+                    {'search': subject.strip(), 'page': 1},
+                    {'q': subject.strip(), 'page': 1},
+                    {'query': subject.strip()},
+                ]
+                
+                for ajax_data in ajax_data_variants:
+                    try:
+                        # Сначала пробуем POST с form-data
+                        ajax_response = session.post(ajax_url, data=ajax_data, timeout=timeout, headers={
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Referer': search_response.url,
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        })
+                        if ajax_response.status_code == 200:
+                            ajax_html = ajax_response.text
+                            print(f"[DEBUG] RMЭБ: AJAX вернул ответ, длина: {len(ajax_html)}")
+                            if len(ajax_html) > 1000:  # Если ответ достаточно большой, возможно там результаты
+                                search_response.text = ajax_html  # Используем AJAX ответ вместо обычного
+                                ajax_tried = True
+                                print(f"[DEBUG] RMЭБ: используем AJAX ответ для парсинга")
+                                break
+                    except Exception as e:
+                        print(f"[DEBUG] RMЭБ: ошибка AJAX запроса (form-data): {e}")
+                        continue
+                
+                # Если form-data не сработало, пробуем JSON
+                if not ajax_tried:
+                    for ajax_data in ajax_data_variants:
+                        try:
+                            ajax_response = session.post(ajax_url, json=ajax_data, timeout=timeout, headers={
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Content-Type': 'application/json',
+                                'Accept': 'application/json',
+                                'Referer': search_response.url,
+                            })
+                            if ajax_response.status_code == 200:
+                                try:
+                                    ajax_json = ajax_response.json()
+                                    print(f"[DEBUG] RMЭБ: AJAX JSON ответ получен")
+                                    # Если это JSON с данными, обрабатываем
+                                    if isinstance(ajax_json, dict):
+                                        print(f"[DEBUG] RMЭБ: JSON ключи: {list(ajax_json.keys())}")
+                                    print(f"[DEBUG] RMЭБ: AJAX ответ: {str(ajax_json)[:500]}")
+                                except:
+                                    # Не JSON, возможно HTML
+                                    ajax_html = ajax_response.text
+                                    print(f"[DEBUG] RMЭБ: AJAX вернул HTML, длина: {len(ajax_html)}")
+                                    if len(ajax_html) > 1000:
+                                        search_response.text = ajax_html
+                                        ajax_tried = True
+                                        break
+                        except Exception as e:
+                            print(f"[DEBUG] RMЭБ: ошибка AJAX запроса (JSON): {e}")
+                            continue
+            except Exception as e:
+                print(f"[DEBUG] RMЭБ: ошибка при попытке AJAX: {e}")
+
         # Парсим страницу результатов
         result_soup = BeautifulSoup(search_response.text, 'html.parser')
 
