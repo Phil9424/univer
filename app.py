@@ -1,5 +1,6 @@
 import base64
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
@@ -389,23 +390,62 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         onclick_elements = results_container.find_all(attrs={'onclick': True})
         print(f"[DEBUG] RMЭБ: найдено элементов с data-link: {len(data_link_elements)}, с onclick: {len(onclick_elements)}")
 
+        # Ищем все возможные ссылки - включая элементы с onclick, которые могут содержать URL
+        for elem in onclick_elements:
+            onclick = elem.get('onclick', '')
+            # Пробуем извлечь URL из onclick (например, window.location.href = "...")
+            url_match = re.search(r'["\']([^"\']+)["\']', onclick)
+            if url_match:
+                url = url_match.group(1)
+                if url.startswith('http') or url.startswith('/'):
+                    # Создаем временную ссылку
+                    class OnClickLink:
+                        def __init__(self, url, elem):
+                            self.url = url
+                            self.elem = elem
+                        def get(self, attr):
+                            if attr == 'href':
+                                return self.url
+                            return self.elem.get(attr, '')
+                        def get_text(self, strip=False):
+                            return self.elem.get_text(strip=strip)
+                        def find_parent(self, *args):
+                            return self.elem.find_parent(*args)
+                    all_links.append(OnClickLink(url, elem))
+
         # Фильтруем ссылки - исключаем только явно служебные
         book_links = []
         excluded_keywords = ['javascript:', 'mailto:', '/language', '/login', '/register', '/about', '/contact', 
-                            'facebook.com', 'twitter.com', 'instagram.com', 'vk.com', 'youtube.com', 'telegram.org']
+                            'facebook.com', 'twitter.com', 'instagram.com', 'vk.com', 'youtube.com', 'telegram.org',
+                            'tel:', 'sms:', 'callto:']
+        
+        # Логируем все найденные ссылки для анализа
+        print(f"[DEBUG] RMЭБ: анализируем {len(all_links)} ссылок...")
+        for i, link in enumerate(all_links[:30]):
+            href = link.get('href') if hasattr(link, 'get') else getattr(link, 'url', getattr(link, 'href', ''))
+            text = link.get_text(strip=True)[:50] if hasattr(link, 'get_text') else ''
+            print(f"[DEBUG] RMЭБ: ссылка {i+1}: href={str(href)[:100]}, text={text}")
         
         for link in all_links:
-            href = link.get('href', '')
+            href = link.get('href') if hasattr(link, 'get') else getattr(link, 'url', getattr(link, 'href', ''))
             if not href or href == '#':
                 continue
             
+            href_str = str(href)
+            href_lower = href_str.lower()
+            
             # Пропускаем только явно служебные ссылки
-            href_lower = href.lower()
             if any(keyword in href_lower for keyword in excluded_keywords):
                 continue
             
             # Пропускаем ссылки на главную и поиск
-            if href_lower in ['/', '/search', '/home', '/index']:
+            if href_lower in ['/', '/search', '/home', '/index', '/search?']:
+                continue
+            
+            # Пропускаем ссылки, которые явно не на книги (например, на категории, теги и т.д.)
+            # Но только если они очень короткие или содержат определенные паттерны
+            if len(href_str) < 5 and href_str.startswith('/'):
+                # Очень короткие ссылки, вероятно не на книги
                 continue
             
             # Берем все остальные ссылки - они могут быть ссылками на книги
@@ -432,45 +472,78 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         
         print(f"[DEBUG] RMЭБ: после фильтрации осталось {len(book_links)} ссылок на книги")
 
-        for i, link in enumerate(book_links[:max_results * 3]):  # Берем больше для фильтрации
+        print(f"[DEBUG] RMЭБ: обрабатываем {len(book_links)} потенциальных ссылок на книги")
+        
+        for i, link in enumerate(book_links[:max_results * 5]):  # Берем больше для фильтрации
             try:
-                href = link.get('href') if hasattr(link, 'get') else getattr(link, 'href', None)
+                # Получаем href разными способами
+                href = None
+                if hasattr(link, 'get'):
+                    href = link.get('href')
+                elif hasattr(link, 'href'):
+                    href = link.href
+                elif hasattr(link, 'url'):
+                    href = link.url
+                elif hasattr(link, 'get_attribute'):
+                    href = link.get_attribute('href')
+                
                 if not href:
+                    print(f"[DEBUG] RMЭБ: ссылка {i+1} - нет href, пропускаем")
+                    continue
+
+                href_str = str(href).strip()
+                if not href_str or href_str == '#':
                     continue
 
                 # Получаем полный URL книги
-                book_url = urljoin(base_url_clean, href)
+                book_url = urljoin(base_url_clean, href_str)
                 
                 # Пропускаем дубликаты
                 if any(r.get('url') == book_url for r in results):
+                    print(f"[DEBUG] RMЭБ: ссылка {i+1} - дубликат, пропускаем: {book_url[:80]}")
                     continue
 
                 # Получаем название книги
+                title = ''
                 if hasattr(link, 'get_text'):
                     title = link.get_text(strip=True)
-                else:
-                    title = ''
+                elif hasattr(link, 'text'):
+                    title = link.text
+                elif hasattr(link, 'elem'):
+                    title = link.elem.get_text(strip=True) if hasattr(link.elem, 'get_text') else ''
                 
                 if not title or len(title) < 3:
                     # Пробуем найти заголовок рядом
-                    parent = link.find_parent(['li', 'div', 'article', 'section', 'tr', 'td']) if hasattr(link, 'find_parent') else None
+                    parent = None
+                    if hasattr(link, 'find_parent'):
+                        parent = link.find_parent(['li', 'div', 'article', 'section', 'tr', 'td', 'span'])
+                    elif hasattr(link, 'parent'):
+                        parent = link.parent
+                    elif hasattr(link, 'elem'):
+                        parent = link.elem.find_parent(['li', 'div', 'article', 'section', 'tr', 'td', 'span']) if hasattr(link.elem, 'find_parent') else None
+                    
                     if parent:
-                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p', 'a'])
+                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p', 'a', 'div'])
                         if title_elem:
                             title = title_elem.get_text(strip=True)
+                        else:
+                            # Берем весь текст родителя
+                            title = parent.get_text(strip=True)
                 
                 # Если все еще нет названия, пробуем взять из атрибута title или data-*
                 if not title or len(title) < 3:
-                    title = link.get('title') if hasattr(link, 'get') else ''
-                    if not title:
-                        # Пробуем взять текст из родительского элемента
-                        if hasattr(link, 'elem'):
-                            title = link.elem.get_text(strip=True)
+                    if hasattr(link, 'get'):
+                        title = link.get('title') or link.get('data-title') or link.get('data-name') or ''
+                    elif hasattr(link, 'elem'):
+                        title = link.elem.get('title') or link.elem.get('data-title') or link.elem.get('data-name') or ''
                     title = title.strip()
 
                 if not title or len(title) < 3:
                     # Используем URL как название, если ничего не найдено
-                    title = href.split('/')[-1].replace('-', ' ').replace('_', ' ').title()
+                    url_parts = href_str.split('/')
+                    if url_parts:
+                        last_part = url_parts[-1]
+                        title = last_part.replace('-', ' ').replace('_', ' ').replace('.html', '').replace('.php', '').title()
                     if len(title) < 3:
                         title = f"Книга {i+1}"
 
