@@ -979,32 +979,6 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                 book_links.append(FakeLink(data_link, elem))
         
         print(f"[DEBUG] RMЭБ: после фильтрации осталось {len(book_links)} ссылок на книги")
-
-        # Если прямые ссылки на книги не найдены, но есть элементы результатов,
-        # создаем упрощенные результаты по заголовкам (без прямого URL книги)
-        if not book_links and result_items:
-            print(f"[DEBUG] RMЭБ: прямые ссылки на книги не найдены, используем fallback по заголовкам list-group-item")
-            for i, item in enumerate(result_items[:max_results]):
-                title_elem = item.find('span', class_='Title')
-                if not title_elem:
-                    continue
-                title = title_elem.get_text(strip=True)
-                # Убираем HTML-теги (например, <b>)
-                title = re.sub(r'<[^>]+>', '', title)
-                if not title or len(title) < 3:
-                    continue
-                print(f"[DEBUG] RMЭБ: fallback результат {i+1} - название: {title[:80]}")
-                results.append({
-                    "title": title,
-                    # Ставим URL страницы поиска RMЭБ для данного запроса
-                    "url": search_response.url,
-                    "status": "warning",
-                    "note": "Найдено в РМЭБ, но прямая ссылка на книгу не обнаружена. Откройте поиск по ссылке и найдите книгу вручную.",
-                    "source": "rmebrk",
-                })
-            print(f"[DEBUG] RMЭБ: собрано {len(results)} результатов (fallback по заголовкам)")
-            return results
-        
         print(f"[DEBUG] RMЭБ: обрабатываем {len(book_links)} потенциальных ссылок на книги")
         
         for i, link in enumerate(book_links[:max_results * 5]):  # Берем больше для фильтрации
@@ -1134,12 +1108,187 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                 print(f"[DEBUG] RMЭБ: traceback: {traceback.format_exc()}")
                 continue
 
+        # Если HTTP-парсер не нашел ни одной прямой ссылки на книги, пробуем найти data-link=\"/book/ID\"
+        # на оригинальной странице поиска (не AJAX), как указано пользователем
+        if not results:
+            try:
+                original_html = search_response.text or ""
+            except Exception:
+                original_html = ""
+
+            if original_html:
+                data_link_pattern = r'data-link=["\\\'](/book/\\d+)["\\\']'
+                data_links = list(dict.fromkeys(re.findall(data_link_pattern, original_html)))
+                if data_links:
+                    print(f"[DEBUG] RMЭБ: глобально найдено {len(data_links)} data-link=/book/.. на оригинальной странице поиска")
+                    try:
+                        original_soup = BeautifulSoup(original_html, 'html.parser')
+                    except Exception:
+                        original_soup = None
+
+                    for idx, dl in enumerate(data_links[:max_results]):
+                        title = ""
+                        if original_soup is not None:
+                            elem = original_soup.find(attrs={'data-link': dl})
+                            if elem:
+                                result_item = elem.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x)) or elem.find_parent('li')
+                                if result_item:
+                                    title_elem = result_item.find('span', class_='Title')
+                                    if title_elem:
+                                        title = title_elem.get_text(strip=True)
+                                        title = re.sub(r'<[^>]+>', '', title)
+                        if not title:
+                            title = subject.strip() or "Книга РМЭБ"
+
+                        book_url = urljoin(base_url_clean, dl)
+                        if any(r.get('url') == book_url for r in results):
+                            continue
+
+                        print(f"[DEBUG] RMЭБ: data-link результат {idx+1}: {title[:80]} -> {book_url}")
+                        results.append({
+                            "title": title,
+                            "url": book_url,
+                            "status": "success",
+                            "note": "Республиканская Межвузовская Электронная Библиотека (по атрибуту data-link)",
+                            "source": "rmebrk",
+                        })
+
+        # Если все еще нет результатов, пробуем Playwright (если доступен)
+        if not results and PLAYWRIGHT_AVAILABLE:
+            print(f"[DEBUG] RMЭБ: HTTP-парсер не нашел прямых ссылок, пробуем Playwright")
+            try:
+                pw_results = search_rmebrk_results_playwright(subject, max_results)
+                if pw_results:
+                    results.extend(pw_results)
+                    print(f"[DEBUG] RMЭБ: Playwright вернул {len(pw_results)} результатов")
+                else:
+                    print("[DEBUG] RMЭБ: Playwright не вернул результатов")
+            except Exception as e:
+                print(f"[DEBUG] RMЭБ: ошибка Playwright fallback: {e}")
+
         print(f"[DEBUG] RMЭБ: собрано {len(results)} результатов")
         return results
 
     except Exception as e:
         print(f"[DEBUG] RMЭБ: ошибка поиска: {e}")
         return []
+
+
+def search_rmebrk_results_playwright(subject: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    """Поиск на РМЭБ через Playwright для получения прямых ссылок на книги.
+
+    Используется только если обычный HTTP-парсер не нашел ни одной ссылки.
+    """
+    results: List[Dict[str, Any]] = []
+
+    if not PLAYWRIGHT_AVAILABLE or sync_playwright is None:
+        print("[DEBUG] RMЭБ Playwright: Playwright недоступен, пропускаем")
+        return results
+
+    base_url = "https://rmebrk.kz/"
+    search_url = f"{base_url}search?search={quote_plus(subject.strip())}"
+
+    print(f"[DEBUG] RMЭБ Playwright: запускаем поиск для '{subject}' по URL {search_url}")
+
+    try:
+        # Используем LOCK, чтобы несколько потоков не запускали браузер одновременно
+        global PLAYWRIGHT_LOCK
+        lock = PLAYWRIGHT_LOCK or Lock()
+
+        with lock:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                page.set_default_timeout(15000)
+
+                page.goto(search_url, wait_until="domcontentloaded")
+
+                # Даем странице немного времени на выполнение JS и подгрузку результатов
+                page.wait_for_timeout(1000)
+
+                try:
+                    page.wait_for_selector("ul.list-group li.list-group-item", timeout=8000)
+                except PlaywrightTimeoutError:
+                    print("[DEBUG] RMЭБ Playwright: элементы list-group-item не найдены")
+                    browser.close()
+                    return results
+
+                items = page.query_selector_all("ul.list-group li.list-group-item")
+                print(f"[DEBUG] RMЭБ Playwright: найдено элементов результатов: {len(items)}")
+
+                for i, item in enumerate(items[:max_results]):
+                    # Заголовок книги
+                    title_elem = item.query_selector("span.Title")
+                    title = ""
+                    if title_elem:
+                        try:
+                            title = title_elem.inner_text().strip()
+                            title = re.sub(r"\s+", " ", title)
+                        except Exception:
+                            title = ""
+
+                    # Пытаемся найти прямую ссылку /book/ в DOM
+                    href = None
+                    link_elem = item.query_selector("a[href*='/book/']")
+                    if link_elem:
+                        href = link_elem.get_attribute("href")
+
+                    # Если прямой ссылки нет, проверяем data-link у элементов доступа
+                    if not href:
+                        access_elem = item.query_selector("li.access_book, li.nopublic_book")
+                        if access_elem:
+                            data_link = access_elem.get_attribute("data-link")
+                            if data_link and "/book/" in data_link:
+                                href = data_link
+
+                    # Если по‑прежнему нет href, пробуем кликнуть по "Просмотр" и взять URL из новой вкладки/страницы
+                    if not href:
+                        access_elem = item.query_selector("li.access_book, li.nopublic_book")
+                        if access_elem:
+                            print(f"[DEBUG] RMЭБ Playwright: пробуем клик по 'Просмотр' для элемента {i+1}")
+                            try:
+                                with context.expect_page() as new_page_info:
+                                    access_elem.click()
+                                new_page = new_page_info.value
+                                new_page.wait_for_load_state("domcontentloaded")
+                                href_candidate = new_page.url
+                                if "/book/" in href_candidate:
+                                    href = href_candidate
+                                    print(f"[DEBUG] RMЭБ Playwright: новая страница для элемента {i+1} -> {href_candidate}")
+                                new_page.close()
+                            except PlaywrightTimeoutError:
+                                print(f"[DEBUG] RMЭБ Playwright: таймаут при открытии страницы книги для элемента {i+1}")
+                            except Exception as e:
+                                print(f"[DEBUG] RMЭБ Playwright: ошибка клика по 'Просмотр' для элемента {i+1}: {e}")
+
+                    if not href or "/book/" not in href:
+                        print(f"[DEBUG] RMЭБ Playwright: не удалось получить ссылку на книгу для элемента {i+1}")
+                        continue
+
+                    book_url = urljoin(base_url, href)
+                    if not title:
+                        title = "Книга РМЭБ"
+
+                    print(f"[DEBUG] RMЭБ Playwright: найден результат {i+1}: {title[:80]} -> {book_url}")
+
+                    results.append({
+                        "title": title,
+                        "url": book_url,
+                        "status": "success",
+                        "note": "Республиканская Межвузовская Электронная Библиотека (через Playwright)",
+                        "source": "rmebrk",
+                    })
+
+                    if len(results) >= max_results:
+                        break
+
+                browser.close()
+
+    except Exception as e:
+        print(f"[DEBUG] RMЭБ Playwright: общая ошибка: {e}")
+
+    return results
 
 
 def search_urait_multiple_results(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
