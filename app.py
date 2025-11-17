@@ -271,16 +271,20 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             'search': subject.strip()
         }
 
-        print(f"[DEBUG] RMЭБ: пробуем прямой POST на {base_url}/search с параметром 'search'")
+        # Убираем лишний слеш в конце base_url
+        base_url_clean = base_url.rstrip('/')
+        search_url_post = f"{base_url_clean}/search"
+        
+        print(f"[DEBUG] RMЭБ: пробуем прямой POST на {search_url_post} с параметром 'search'")
 
         try:
             # Сначала пробуем POST на /search
-            search_response = session.post(f"{base_url}/search", data=search_data, timeout=timeout)
+            search_response = session.post(search_url_post, data=search_data, timeout=timeout)
 
             if search_response.status_code != 200 or len(search_response.text) < 1000:
                 print(f"[DEBUG] RMЭБ: POST вернул {search_response.status_code}, длина: {len(search_response.text)}, пробуем GET")
                 # Если POST не сработал, пробуем GET с параметрами в URL
-                search_url_get = f"{base_url}/search?search={quote_plus(subject.strip())}"
+                search_url_get = f"{base_url_clean}/search?search={quote_plus(subject.strip())}"
                 print(f"[DEBUG] RMЭБ: пробуем GET запрос: {search_url_get}")
                 search_response = session.get(search_url_get, timeout=timeout)
 
@@ -306,7 +310,7 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                     # Пробуем POST с правильным параметром
                     param_name = search_input.get('name') or 'search'
                     search_data = {param_name: subject.strip()}
-                    search_response = session.post(f"{base_url}/search", data=search_data, timeout=timeout)
+                    search_response = session.post(search_url_post, data=search_data, timeout=timeout)
                     print(f"[DEBUG] RMЭБ: повторный POST с параметром '{param_name}'")
                 else:
                     print(f"[DEBUG] RMЭБ: поле поиска не найдено, пропускаем")
@@ -324,47 +328,117 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         print(f"[DEBUG] RMЭБ: страница результатов получена, длина: {len(search_response.text)} символов")
         print(f"[DEBUG] RMЭБ: URL результатов: {search_response.url}")
 
-        # Проверяем, что это страница с результатами поиска
-        if 'search' not in search_response.url.lower() and len(search_response.text) < 10000:
-            print(f"[DEBUG] RMЭБ: возможно, поиск не сработал или перенаправление")
-            print(f"[DEBUG] RMЭБ: превью ответа: {search_response.text[:500]}")
-
         # Парсим страницу результатов
         result_soup = BeautifulSoup(search_response.text, 'html.parser')
 
+        # Логируем структуру страницы для диагностики
+        print(f"[DEBUG] RMЭБ: анализируем структуру страницы результатов...")
+        
+        # Ищем все div с классами col-md-*
+        all_col_divs = result_soup.find_all('div', class_=lambda x: x and ('col-md' in str(x) or 'col-xs' in str(x) or 'col-sm' in str(x)))
+        print(f"[DEBUG] RMЭБ: найдено div с классами col-md/col-xs/col-sm: {len(all_col_divs)}")
+        
         # Ищем контейнер с результатами (как описано в инструкции пользователя)
         results_container = result_soup.find('div', {'class': 'col-md-12 col-xs-12 col-sm-12'})
         if not results_container:
-            print(f"[DEBUG] RMЭБ: контейнер результатов не найден")
-            return []
+            # Пробуем другие варианты селекторов
+            results_container = result_soup.find('div', class_=lambda x: x and 'col-md-12' in str(x) and 'col-xs-12' in str(x))
+            if not results_container:
+                # Ищем любой div с col-md-12
+                results_container = result_soup.find('div', class_=lambda x: x and 'col-md-12' in str(x))
+            if not results_container:
+                # Ищем контейнеры с результатами по другим признакам
+                # Пробуем найти список результатов (ul, ol) или контейнеры с книгами
+                results_container = result_soup.find('ul', class_=lambda x: x and ('list' in str(x).lower() or 'result' in str(x).lower()))
+                if not results_container:
+                    results_container = result_soup.find('div', class_=lambda x: x and ('result' in str(x).lower() or 'book' in str(x).lower() or 'item' in str(x).lower()))
+        
+        if not results_container:
+            print(f"[DEBUG] RMЭБ: контейнер результатов не найден, логируем структуру страницы...")
+            # Логируем первые 2000 символов HTML для анализа
+            print(f"[DEBUG] RMЭБ: превью HTML (первые 2000 символов):")
+            print(search_response.text[:2000])
+            
+            # Пробуем найти все ссылки на странице
+            all_links = result_soup.find_all('a', href=True)
+            print(f"[DEBUG] RMЭБ: найдено всего ссылок на странице: {len(all_links)}")
+            for i, link in enumerate(all_links[:10]):
+                href = link.get('href', '')
+                text = link.get_text(strip=True)[:50]
+                print(f"[DEBUG] RMЭБ: ссылка {i+1}: href={href[:80]}, text={text}")
+            
+            # Если есть ссылки, пробуем использовать их напрямую
+            if all_links:
+                print(f"[DEBUG] RMЭБ: используем все ссылки со страницы как результаты")
+                results_container = result_soup  # Используем весь документ
+            else:
+                return []
 
         # Ищем все ссылки на книги в результатах
-        book_links = results_container.find_all('a', href=True)
-        print(f"[DEBUG] RMЭБ: найдено {len(book_links)} ссылок в результатах")
+        all_links = results_container.find_all('a', href=True)
+        print(f"[DEBUG] RMЭБ: найдено {len(all_links)} ссылок в контейнере результатов")
 
-        for i, link in enumerate(book_links[:max_results]):
+        # Фильтруем ссылки - исключаем служебные (навигация, футер, языки и т.д.)
+        book_links = []
+        excluded_keywords = ['#', 'javascript:', 'mailto:', '/language', '/login', '/register', '/about', '/contact', 
+                            'facebook', 'twitter', 'instagram', 'vk.com', 'youtube', 'telegram']
+        
+        for link in all_links:
+            href = link.get('href', '')
+            if not href:
+                continue
+            
+            # Пропускаем служебные ссылки
+            href_lower = href.lower()
+            if any(keyword in href_lower for keyword in excluded_keywords):
+                continue
+            
+            # Пропускаем ссылки без текста или с очень коротким текстом (вероятно, иконки)
+            link_text = link.get_text(strip=True)
+            if len(link_text) < 3:
+                continue
+            
+            # Пропускаем ссылки, которые явно не на книги (например, на главную, поиск и т.д.)
+            if href_lower in ['/', '/search', '/home', '/index']:
+                continue
+            
+            book_links.append(link)
+        
+        print(f"[DEBUG] RMЭБ: после фильтрации осталось {len(book_links)} ссылок на книги")
+
+        for i, link in enumerate(book_links[:max_results * 2]):  # Берем больше для фильтрации дубликатов
             try:
                 href = link.get('href')
                 if not href:
                     continue
 
                 # Получаем полный URL
-                full_url = urljoin(base_url, href)
+                full_url = urljoin(base_url_clean, href)
+                
+                # Пропускаем дубликаты
+                if any(r.get('url') == full_url for r in results):
+                    continue
 
                 # Получаем название книги
                 title = link.get_text(strip=True)
-                if not title:
+                if not title or len(title) < 3:
                     # Пробуем найти заголовок рядом
-                    parent = link.find_parent()
+                    parent = link.find_parent(['li', 'div', 'article', 'section'])
                     if parent:
-                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong'])
+                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p'])
                         if title_elem:
                             title = title_elem.get_text(strip=True)
+                
+                # Если все еще нет названия, пробуем взять из атрибута title или data-*
+                if not title or len(title) < 3:
+                    title = link.get('title') or link.get('data-title') or link.get('data-name') or ''
+                    title = title.strip()
 
-                if not title:
+                if not title or len(title) < 3:
+                    print(f"[DEBUG] RMЭБ: элемент {i+1} - пропущен (нет названия), href={href[:80]}")
                     continue
 
-                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title}, ссылка: {full_url}")
+                print(f"[DEBUG] RMЭБ: элемент {i+1} - название: {title[:80]}, ссылка: {full_url[:100]}")
 
                 results.append({
                     "title": title,
@@ -373,6 +447,9 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                     "note": "Республиканская Межвузовская Электронная Библиотека - бесплатный доступ к учебникам",
                     "source": "rmebrk"
                 })
+                
+                if len(results) >= max_results:
+                    break
 
             except Exception as e:
                 print(f"[DEBUG] RMЭБ: ошибка обработки ссылки {i+1}: {e}")
