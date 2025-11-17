@@ -480,6 +480,10 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             print(f"[DEBUG] RMЭБ: контейнер пустой или не найден, используем весь документ")
             results_container = result_soup
 
+        # Ищем элементы результатов поиска - <li class="list-group-item">
+        result_items = results_container.find_all('li', class_=lambda x: x and 'list-group-item' in str(x))
+        print(f"[DEBUG] RMЭБ: найдено элементов результатов (list-group-item): {len(result_items)}")
+        
         # Ищем все ссылки на книги в результатах
         all_links = results_container.find_all('a', href=True)
         print(f"[DEBUG] RMЭБ: найдено {len(all_links)} ссылок в контейнере результатов")
@@ -487,7 +491,51 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         # Также ищем элементы с data-link или onclick (могут быть ссылками на книги)
         data_link_elements = results_container.find_all(attrs={'data-link': True})
         onclick_elements = results_container.find_all(attrs={'onclick': True})
-        print(f"[DEBUG] RMЭБ: найдено элементов с data-link: {len(data_link_elements)}, с onclick: {len(onclick_elements)}")
+        # Ищем элементы с data-id (могут быть ссылками на книги)
+        data_id_elements = results_container.find_all(attrs={'data-id': True})
+        print(f"[DEBUG] RMЭБ: найдено элементов с data-link: {len(data_link_elements)}, с onclick: {len(onclick_elements)}, с data-id: {len(data_id_elements)}")
+        
+        # Обрабатываем элементы результатов - ищем ссылки на книги внутри них
+        for item in result_items:
+            # Ищем ссылку "Просмотр" внутри элемента результата
+            view_link = item.find('a', href=re.compile(r'/book/\d+'))
+            if view_link:
+                href = view_link.get('href', '')
+                if href:
+                    all_links.append(view_link)
+                    print(f"[DEBUG] RMЭБ: найдена ссылка на книгу в результате: {href}")
+            
+            # Также проверяем элементы с data-id - можем построить URL
+            data_id_elem = item.find(attrs={'data-id': True})
+            if data_id_elem:
+                book_id = data_id_elem.get('data-id', '')
+                if book_id:
+                    # Создаем искусственную ссылку
+                    class DataIdLink:
+                        def __init__(self, book_id, elem):
+                            self.book_id = book_id
+                            self.elem = elem
+                            self.href = f"/book/{book_id}"
+                        def get(self, attr):
+                            if attr == 'href':
+                                return self.href
+                            return self.elem.get(attr, '')
+                        def get_text(self, strip=False):
+                            # Пробуем найти название книги
+                            parent = self.elem.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x)) if hasattr(self.elem, 'find_parent') else None
+                            if parent:
+                                title_elem = parent.find('span', class_='Title')
+                                if title_elem:
+                                    title = title_elem.get_text(strip=strip)
+                                    # Убираем HTML теги
+                                    title = re.sub(r'<[^>]+>', '', title)
+                                    return title
+                            # Пробуем data-title
+                            return self.elem.get('data-title', '')
+                        def find_parent(self, *args):
+                            return self.elem.find_parent(*args) if hasattr(self.elem, 'find_parent') else None
+                    all_links.append(DataIdLink(book_id, data_id_elem))
+                    print(f"[DEBUG] RMЭБ: создана ссылка из data-id: /book/{book_id}")
 
         # Ищем все возможные ссылки - включая элементы с onclick, которые могут содержать URL
         for elem in onclick_elements:
@@ -512,11 +560,29 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                             return self.elem.find_parent(*args)
                     all_links.append(OnClickLink(url, elem))
 
-        # Фильтруем ссылки - исключаем только явно служебные
+        # Фильтруем ссылки - ищем только ссылки на книги
         book_links = []
-        excluded_keywords = ['javascript:', 'mailto:', '/language', '/login', '/register', '/about', '/contact', 
-                            'facebook.com', 'twitter.com', 'instagram.com', 'vk.com', 'youtube.com', 'telegram.org',
-                            'tel:', 'sms:', 'callto:']
+        
+        # Паттерны URL, которые могут быть ссылками на книги
+        book_url_patterns = [
+            '/book/', '/books/', '/publication/', '/publications/', '/resource/', '/resources/',
+            '/view/', '/read/', '/download/', '/item/', '/detail/', '/show/',
+            '/id/', '/book_id/', '/publication_id/', '/resource_id/',
+        ]
+        
+        # Исключаем навигационные и служебные ссылки
+        excluded_paths = [
+            '/', '/search', '/home', '/index', '/about', '/contact', '/partners', '/users',
+            '/reports/', '/blogs', '/statistics', '/newfeedback', '/ulogin', '/login', '/register',
+            '/language', '/magazines', '/lectures', '/resources', '/publications/authors',
+            '/search/resources', '/search?',
+        ]
+        
+        excluded_keywords = [
+            'javascript:', 'mailto:', 'tel:', 'sms:', 'callto:',
+            'facebook.com', 'twitter.com', 'instagram.com', 'vk.com', 'youtube.com', 'telegram.org',
+            'edurk.kz',  # Внешний сайт
+        ]
         
         # Логируем все найденные ссылки для анализа
         print(f"[DEBUG] RMЭБ: анализируем {len(all_links)} ссылок...")
@@ -530,25 +596,63 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             if not href or href == '#':
                 continue
             
-            href_str = str(href)
+            href_str = str(href).strip()
             href_lower = href_str.lower()
             
-            # Пропускаем только явно служебные ссылки
+            # Пропускаем пустые ссылки и якоря
+            if not href_str or href_str.startswith('#'):
+                continue
+            
+            # Пропускаем явно служебные ссылки
             if any(keyword in href_lower for keyword in excluded_keywords):
                 continue
             
-            # Пропускаем ссылки на главную и поиск
-            if href_lower in ['/', '/search', '/home', '/index', '/search?']:
+            # Пропускаем навигационные пути
+            if any(path in href_lower for path in excluded_paths):
                 continue
             
-            # Пропускаем ссылки, которые явно не на книги (например, на категории, теги и т.д.)
-            # Но только если они очень короткие или содержат определенные паттерны
-            if len(href_str) < 5 and href_str.startswith('/'):
-                # Очень короткие ссылки, вероятно не на книги
+            # Пропускаем очень короткие ссылки (вероятно, не на книги)
+            if len(href_str) < 10 and href_str.startswith('/'):
                 continue
             
-            # Берем все остальные ссылки - они могут быть ссылками на книги
-            book_links.append(link)
+            # Пропускаем ссылки на главную страницу
+            if href_lower in ['https://rmebrk.kz', 'https://rmebrk.kz/', 'http://rmebrk.kz', 'http://rmebrk.kz/']:
+                continue
+            
+            # Ищем ссылки, которые выглядят как ссылки на книги
+            is_book_link = False
+            
+            # Приоритет: ссылки вида /book/{id}
+            if re.match(r'^/book/\d+', href_str):
+                is_book_link = True
+                print(f"[DEBUG] RMЭБ: найдена ссылка на книгу /book/: {href_str[:100]}")
+            
+            # Проверяем паттерны URL книг
+            elif any(pattern in href_lower for pattern in book_url_patterns):
+                is_book_link = True
+                print(f"[DEBUG] RMЭБ: найдена ссылка на книгу по паттерну: {href_str[:100]}")
+            
+            # Проверяем, содержит ли URL ID (цифры в пути) и находится в элементе результата
+            elif re.search(r'/\d+', href_str) and len(href_str) > 15:
+                # Проверяем, находится ли ссылка в элементе результата (list-group-item)
+                if hasattr(link, 'find_parent'):
+                    result_item = link.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x))
+                    if result_item:
+                        is_book_link = True
+                        print(f"[DEBUG] RMЭБ: найдена ссылка с ID в результате: {href_str[:100]}")
+            
+            # Проверяем, находится ли ссылка в контейнере результатов (не в навигации)
+            if not is_book_link and hasattr(link, 'find_parent'):
+                parent = link.find_parent(['nav', 'header', 'footer', 'aside'])
+                if not parent:  # Не в навигации
+                    # Если ссылка достаточно длинная и не в навигации, возможно это книга
+                    if len(href_str) > 20:
+                        is_book_link = True
+            
+            if is_book_link:
+                book_links.append(link)
+            else:
+                print(f"[DEBUG] RMЭБ: ссылка пропущена (не похожа на книгу): {href_str[:100]}")
         
         # Добавляем элементы с data-link как ссылки на книги
         for elem in data_link_elements:
@@ -604,12 +708,41 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
 
                 # Получаем название книги
                 title = ''
-                if hasattr(link, 'get_text'):
-                    title = link.get_text(strip=True)
-                elif hasattr(link, 'text'):
-                    title = link.text
+                
+                # Сначала пробуем найти элемент результата (list-group-item)
+                result_item = None
+                if hasattr(link, 'find_parent'):
+                    result_item = link.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x))
+                elif hasattr(link, 'parent'):
+                    result_item = link.parent.find('li', class_=lambda x: x and 'list-group-item' in str(x)) if hasattr(link.parent, 'find') else None
                 elif hasattr(link, 'elem'):
-                    title = link.elem.get_text(strip=True) if hasattr(link.elem, 'get_text') else ''
+                    result_item = link.elem.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x)) if hasattr(link.elem, 'find_parent') else None
+                
+                if result_item:
+                    # Ищем название в <span class="Title">
+                    title_elem = result_item.find('span', class_='Title')
+                    if title_elem:
+                        title = title_elem.get_text(strip=True)
+                        # Убираем HTML теги из названия (например, <b>)
+                        title = re.sub(r'<[^>]+>', '', title)
+                    else:
+                        # Пробуем найти в data-title
+                        data_id_elem = result_item.find(attrs={'data-title': True})
+                        if data_id_elem:
+                            title = data_id_elem.get('data-title', '')
+                
+                # Если не нашли через result_item, пробуем другие способы
+                if not title or len(title) < 3:
+                    if hasattr(link, 'get_text'):
+                        title = link.get_text(strip=True)
+                    elif hasattr(link, 'text'):
+                        title = link.text
+                    elif hasattr(link, 'elem'):
+                        title = link.elem.get_text(strip=True) if hasattr(link.elem, 'get_text') else ''
+                    
+                    # Пробуем найти data-title
+                    if (not title or len(title) < 3) and hasattr(link, 'elem'):
+                        title = link.elem.get('data-title', '') if hasattr(link.elem, 'get') else ''
                 
                 if not title or len(title) < 3:
                     # Пробуем найти заголовок рядом
@@ -622,12 +755,18 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                         parent = link.elem.find_parent(['li', 'div', 'article', 'section', 'tr', 'td', 'span']) if hasattr(link.elem, 'find_parent') else None
                     
                     if parent:
-                        title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p', 'a', 'div'])
+                        # Ищем span.Title
+                        title_elem = parent.find('span', class_='Title')
                         if title_elem:
                             title = title_elem.get_text(strip=True)
+                            title = re.sub(r'<[^>]+>', '', title)
                         else:
-                            # Берем весь текст родителя
-                            title = parent.get_text(strip=True)
+                            title_elem = parent.find(['h1', 'h2', 'h3', 'h4', 'h5', 'strong', 'span', 'p', 'a', 'div'])
+                            if title_elem:
+                                title = title_elem.get_text(strip=True)
+                            else:
+                                # Берем весь текст родителя
+                                title = parent.get_text(strip=True)
                 
                 # Если все еще нет названия, пробуем взять из атрибута title или data-*
                 if not title or len(title) < 3:
