@@ -508,46 +508,78 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         print(f"[DEBUG] RMЭБ: найдено элементов с data-link: {len(data_link_elements)}, с onclick: {len(onclick_elements)}, с data-id: {len(data_id_elements)}")
         
         # Обрабатываем элементы результатов - ищем ссылки на книги внутри них
-        for item in result_items:
-            # Ищем ссылку "Просмотр" внутри элемента результата
-            view_link = item.find('a', href=re.compile(r'/book/\d+'))
-            if view_link:
-                href = view_link.get('href', '')
-                if href:
-                    all_links.append(view_link)
+        print(f"[DEBUG] RMЭБ: обрабатываем {len(result_items)} элементов результатов")
+        for i, item in enumerate(result_items):
+            print(f"[DEBUG] RMЭБ: элемент результата {i+1}:")
+            
+            # Ищем все ссылки внутри элемента результата
+            item_links = item.find_all('a', href=True)
+            print(f"[DEBUG] RMЭБ: найдено {len(item_links)} ссылок в элементе {i+1}")
+            
+            # Ищем ссылку "Просмотр" с /book/{id}
+            view_link = None
+            for link in item_links:
+                href = link.get('href', '')
+                link_text = link.get_text(strip=True).lower()
+                print(f"[DEBUG] RMЭБ: ссылка в элементе {i+1}: href={href[:100]}, text={link_text[:50]}")
+                if re.match(r'^/book/\d+', href):
+                    view_link = link
                     print(f"[DEBUG] RMЭБ: найдена ссылка на книгу в результате: {href}")
+                    break
+            
+            if view_link:
+                all_links.append(view_link)
+            else:
+                print(f"[DEBUG] RMЭБ: ссылка /book/ не найдена в элементе {i+1}, ищем data-id")
             
             # Также проверяем элементы с data-id - можем построить URL
+            # Ищем в разных местах: в result-access-link, search-items и т.д.
             data_id_elem = item.find(attrs={'data-id': True})
-            if data_id_elem:
+            if not data_id_elem:
+                # Пробуем найти в result-access-link
+                access_link = item.find('div', class_='result-access-link')
+                if access_link:
+                    data_id_elem = access_link.find(attrs={'data-id': True})
+            if not data_id_elem:
+                # Пробуем найти search-items
+                search_items = item.find('li', class_='search-items')
+                if search_items:
+                    data_id_elem = search_items
+            
+            if data_id_elem and data_id_elem.get('data-id'):
                 book_id = data_id_elem.get('data-id', '')
+                print(f"[DEBUG] RMЭБ: найден data-id в элементе {i+1}: {book_id}")
                 if book_id:
                     # Создаем искусственную ссылку
                     class DataIdLink:
-                        def __init__(self, book_id, elem):
+                        def __init__(self, book_id, elem, item):
                             self.book_id = book_id
                             self.elem = elem
+                            self.item = item
                             self.href = f"/book/{book_id}"
                         def get(self, attr):
                             if attr == 'href':
                                 return self.href
-                            return self.elem.get(attr, '')
+                            return self.elem.get(attr, '') if hasattr(self.elem, 'get') else ''
                         def get_text(self, strip=False):
-                            # Пробуем найти название книги
-                            parent = self.elem.find_parent('li', class_=lambda x: x and 'list-group-item' in str(x)) if hasattr(self.elem, 'find_parent') else None
-                            if parent:
-                                title_elem = parent.find('span', class_='Title')
-                                if title_elem:
-                                    title = title_elem.get_text(strip=strip)
-                                    # Убираем HTML теги
-                                    title = re.sub(r'<[^>]+>', '', title)
-                                    return title
+                            # Пробуем найти название книги в элементе результата
+                            title_elem = self.item.find('span', class_='Title')
+                            if title_elem:
+                                title = title_elem.get_text(strip=strip)
+                                # Убираем HTML теги
+                                title = re.sub(r'<[^>]+>', '', title)
+                                return title
                             # Пробуем data-title
-                            return self.elem.get('data-title', '')
+                            if hasattr(self.elem, 'get'):
+                                return self.elem.get('data-title', '')
+                            return ''
                         def find_parent(self, *args):
-                            return self.elem.find_parent(*args) if hasattr(self.elem, 'find_parent') else None
-                    all_links.append(DataIdLink(book_id, data_id_elem))
+                            return self.item if args else None
+                    all_links.append(DataIdLink(book_id, data_id_elem, item))
                     print(f"[DEBUG] RMЭБ: создана ссылка из data-id: /book/{book_id}")
+            else:
+                print(f"[DEBUG] RMЭБ: data-id не найден в элементе {i+1}, логируем HTML элемента:")
+                print(f"[DEBUG] RMЭБ: HTML элемента {i+1} (первые 2000 символов): {str(item)[:2000]}")
 
         # Ищем все возможные ссылки - включая элементы с onclick, которые могут содержать URL
         for elem in onclick_elements:
