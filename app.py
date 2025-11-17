@@ -355,6 +355,9 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                         print(f"[DEBUG] RMЭБ: найден потенциальный AJAX endpoint: {ajax_endpoint}")
                         break
         
+        # Используем переменную для HTML контента (может быть заменена AJAX ответом)
+        html_content = search_response.text
+        
         # Пробуем известный AJAX endpoint /test/listinlist
         ajax_tried = False
         if not ajax_endpoint:
@@ -387,10 +390,11 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                         if ajax_response.status_code == 200:
                             ajax_html = ajax_response.text
                             print(f"[DEBUG] RMЭБ: AJAX вернул ответ, длина: {len(ajax_html)}")
-                            if len(ajax_html) > 1000:  # Если ответ достаточно большой, возможно там результаты
-                                search_response.text = ajax_html  # Используем AJAX ответ вместо обычного
+                            # Проверяем, есть ли в ответе элементы результатов
+                            if len(ajax_html) > 1000 and ('list-group-item' in ajax_html or '/book/' in ajax_html):
+                                html_content = ajax_html  # Используем AJAX ответ
                                 ajax_tried = True
-                                print(f"[DEBUG] RMЭБ: используем AJAX ответ для парсинга")
+                                print(f"[DEBUG] RMЭБ: используем AJAX ответ для парсинга (найдены результаты)")
                                 break
                     except Exception as e:
                         print(f"[DEBUG] RMЭБ: ошибка AJAX запроса (form-data): {e}")
@@ -418,8 +422,8 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                                     # Не JSON, возможно HTML
                                     ajax_html = ajax_response.text
                                     print(f"[DEBUG] RMЭБ: AJAX вернул HTML, длина: {len(ajax_html)}")
-                                    if len(ajax_html) > 1000:
-                                        search_response.text = ajax_html
+                                    if len(ajax_html) > 1000 and ('list-group-item' in ajax_html or '/book/' in ajax_html):
+                                        html_content = ajax_html
                                         ajax_tried = True
                                         break
                         except Exception as e:
@@ -428,11 +432,19 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             except Exception as e:
                 print(f"[DEBUG] RMЭБ: ошибка при попытке AJAX: {e}")
 
-        # Парсим страницу результатов
-        result_soup = BeautifulSoup(search_response.text, 'html.parser')
+        # Парсим страницу результатов (используем html_content, который может быть из AJAX)
+        result_soup = BeautifulSoup(html_content, 'html.parser')
 
         # Логируем структуру страницы для диагностики
         print(f"[DEBUG] RMЭБ: анализируем структуру страницы результатов...")
+        print(f"[DEBUG] RMЭБ: длина HTML контента: {len(html_content)} символов")
+        print(f"[DEBUG] RMЭБ: используется AJAX ответ: {ajax_tried}")
+        
+        # Проверяем, есть ли в HTML элементы результатов
+        if 'list-group-item' in html_content:
+            print(f"[DEBUG] RMЭБ: найдены элементы list-group-item в HTML")
+        if '/book/' in html_content:
+            print(f"[DEBUG] RMЭБ: найдены ссылки /book/ в HTML")
         
         # Ищем все div с классами col-md-*
         all_col_divs = result_soup.find_all('div', class_=lambda x: x and ('col-md' in str(x) or 'col-xs' in str(x) or 'col-sm' in str(x)))
