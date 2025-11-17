@@ -980,6 +980,31 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         
         print(f"[DEBUG] RMЭБ: после фильтрации осталось {len(book_links)} ссылок на книги")
 
+        # Если прямые ссылки на книги не найдены, но есть элементы результатов,
+        # создаем упрощенные результаты по заголовкам (без прямого URL книги)
+        if not book_links and result_items:
+            print(f"[DEBUG] RMЭБ: прямые ссылки на книги не найдены, используем fallback по заголовкам list-group-item")
+            for i, item in enumerate(result_items[:max_results]):
+                title_elem = item.find('span', class_='Title')
+                if not title_elem:
+                    continue
+                title = title_elem.get_text(strip=True)
+                # Убираем HTML-теги (например, <b>)
+                title = re.sub(r'<[^>]+>', '', title)
+                if not title or len(title) < 3:
+                    continue
+                print(f"[DEBUG] RMЭБ: fallback результат {i+1} - название: {title[:80]}")
+                results.append({
+                    "title": title,
+                    # Ставим URL страницы поиска RMЭБ для данного запроса
+                    "url": search_response.url,
+                    "status": "warning",
+                    "note": "Найдено в РМЭБ, но прямая ссылка на книгу не обнаружена. Откройте поиск по ссылке и найдите книгу вручную.",
+                    "source": "rmebrk",
+                })
+            print(f"[DEBUG] RMЭБ: собрано {len(results)} результатов (fallback по заголовкам)")
+            return results
+        
         print(f"[DEBUG] RMЭБ: обрабатываем {len(book_links)} потенциальных ссылок на книги")
         
         for i, link in enumerate(book_links[:max_results * 5]):  # Берем больше для фильтрации
