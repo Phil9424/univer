@@ -545,9 +545,24 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                     nopublic_elems = item.find_all('li', class_=lambda x: x and ('nopublic_book' in str(x) or 'access_book' in str(x)))
                     print(f"[DEBUG] RMЭБ: найдено {len(nopublic_elems)} элементов nopublic_book/access_book в элементе {i+1}")
                     for nopublic_elem in nopublic_elems:
-                        if nopublic_elem.get('data-link'):
+                        # Логируем все атрибуты элемента
+                        all_attrs = dict(nopublic_elem.attrs)
+                        print(f"[DEBUG] RMЭБ: элемент nopublic_book/access_book: атрибуты={all_attrs}")
+                        data_link_value = nopublic_elem.get('data-link', '')
+                        print(f"[DEBUG] RMЭБ: data-link значение: '{data_link_value}'")
+                        if data_link_value:
                             data_link_elems.append(nopublic_elem)
-                            print(f"[DEBUG] RMЭБ: найден элемент с data-link в nopublic_book/access_book")
+                            print(f"[DEBUG] RMЭБ: найден элемент с data-link в nopublic_book/access_book: {data_link_value}")
+                        else:
+                            # Пробуем найти data-link в HTML строке элемента
+                            elem_html = str(nopublic_elem)
+                            data_link_match = re.search(r'data-link=["\']([^"\']+)["\']', elem_html)
+                            if data_link_match:
+                                data_link_value = data_link_match.group(1)
+                                print(f"[DEBUG] RMЭБ: найден data-link в HTML строке: {data_link_value}")
+                                # Создаем временный объект с data-link
+                                nopublic_elem['data-link'] = data_link_value
+                                data_link_elems.append(nopublic_elem)
                 
                 # Обрабатываем найденные элементы
                 for data_link_elem in data_link_elems:
