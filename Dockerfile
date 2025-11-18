@@ -1,20 +1,10 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
 WORKDIR /app
-
-# Установка системных зависимостей для Playwright
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
 
 # Копируем requirements
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Устанавливаем Playwright и браузеры (install-deps автоматически установит все нужные пакеты)
-RUN playwright install --with-deps chromium
 
 # Копируем код
 COPY . .
