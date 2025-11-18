@@ -1359,15 +1359,18 @@ def search_rmebrk_results_playwright(subject: str, max_results: int = 10) -> Lis
 
                 page.goto(search_url, wait_until="domcontentloaded")
 
-                # Даем странице немного времени на выполнение JS и подгрузку результатов
-                page.wait_for_timeout(1000)
+                # Даем странице больше времени на выполнение JS и подгрузку результатов
+                page.wait_for_timeout(3000)
 
                 try:
-                    page.wait_for_selector("ul.list-group li.list-group-item", timeout=8000)
+                    page.wait_for_selector("ul.list-group li.list-group-item", timeout=15000)
                 except PlaywrightTimeoutError:
                     print("[DEBUG] RMЭБ Playwright: элементы list-group-item не найдены")
                     browser.close()
                     return results
+
+                # Дополнительная задержка для полной загрузки
+                page.wait_for_timeout(2000)
 
                 items = page.query_selector_all("ul.list-group li.list-group-item")
                 print(f"[DEBUG] RMЭБ Playwright: найдено элементов результатов: {len(items)}")
@@ -1397,23 +1400,38 @@ def search_rmebrk_results_playwright(subject: str, max_results: int = 10) -> Lis
                             if data_link and "/book/" in data_link:
                                 href = data_link
 
-                    # Если по‑прежнему нет href, пробуем кликнуть по "Просмотр" и взять URL из новой вкладки/страницы
+                    # Если по‑прежнему нет href, пробуем кликнуть по "Просмотр" с другой стратегией
                     if not href:
                         access_elem = item.query_selector("li.access_book, li.nopublic_book")
                         if access_elem:
                             print(f"[DEBUG] RMЭБ Playwright: пробуем клик по 'Просмотр' для элемента {i+1}")
                             try:
-                                with context.expect_page() as new_page_info:
-                                    access_elem.click()
-                                new_page = new_page_info.value
-                                new_page.wait_for_load_state("domcontentloaded")
-                                href_candidate = new_page.url
-                                if "/book/" in href_candidate:
-                                    href = href_candidate
-                                    print(f"[DEBUG] RMЭБ Playwright: новая страница для элемента {i+1} -> {href_candidate}")
-                                new_page.close()
+                                # Сохраняем текущий URL
+                                current_url = page.url
+
+                                # Кликаем с таймаутом
+                                access_elem.click(timeout=10000)
+
+                                # Ждем изменения URL или загрузки новой страницы
+                                page.wait_for_timeout(2000)
+
+                                # Проверяем, изменился ли URL
+                                new_url = page.url
+                                if new_url != current_url and "/book/" in new_url:
+                                    href = new_url
+                                    print(f"[DEBUG] RMЭБ Playwright: URL изменился для элемента {i+1} -> {href}")
+                                else:
+                                    # Проверяем, есть ли ссылки на странице после клика
+                                    book_links = page.query_selector_all("a[href*='/book/']")
+                                    for link in book_links:
+                                        potential_href = link.get_attribute("href")
+                                        if potential_href and "/book/" in potential_href:
+                                            href = potential_href
+                                            print(f"[DEBUG] RMЭБ Playwright: найдена ссылка после клика для элемента {i+1} -> {href}")
+                                            break
+
                             except PlaywrightTimeoutError:
-                                print(f"[DEBUG] RMЭБ Playwright: таймаут при открытии страницы книги для элемента {i+1}")
+                                print(f"[DEBUG] RMЭБ Playwright: таймаут при клике для элемента {i+1}")
                             except Exception as e:
                                 print(f"[DEBUG] RMЭБ Playwright: ошибка клика по 'Просмотр' для элемента {i+1}: {e}")
 
