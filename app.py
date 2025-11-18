@@ -447,8 +447,16 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             print(f"[DEBUG] RMЭБ: строка '/book/' ЕСТЬ в контенте")
         else:
             print(f"[DEBUG] RMЭБ: строка '/book/' ОТСУТСТВУЕТ в контенте")
-            # Сохраняем первые 5000 символов для диагностики
-            print(f"[DEBUG] RMЭБ: первые 5000 символов AJAX-ответа:\n{search_content[:5000]}")
+            # ПРОБЛЕМА: data-link генерируется JavaScript на клиенте!
+            # Попытка: ищем в исходной странице data-id в элементе search-items (кнопка "Описание")
+            # и строим /book/{data-id}
+            print(f"[DEBUG] RMЭБ: ищем data-id в <li class='search-items'> элементах")
+            data_id_pattern = r'<li[^>]*class=["\']search-items["\'][^>]*data-id=["\'](\d+)["\']'
+            found_data_ids = re.findall(data_id_pattern, search_content, re.IGNORECASE)
+            if found_data_ids:
+                print(f"[DEBUG] RMЭБ: найдено {len(found_data_ids)} data-id в search-items: {found_data_ids[:10]}")
+                # Используем найденные data-id как book ID
+                found_book_ids = found_data_ids
         
         if found_book_ids:
             print(f"[DEBUG] RMЭБ: найдено {len(found_book_ids)} упоминаний /book/ в HTML/AJAX")
