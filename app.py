@@ -435,12 +435,19 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         # СНАЧАЛА: агрессивный поиск /book/ID во ВСЁМ оригинальном HTML (не AJAX)
         # Это делаем ДО BeautifulSoup парсинга, чтобы вытащить ID даже если структура странная
         original_search_html = search_response.text if search_response else ""
-        if '/book/' in original_search_html:
-            print(f"[DEBUG] RMЭБ: найдены упоминания /book/ в оригинальном HTML, извлекаем все ID")
-            # Ищем все вхождения /book/123456
-            book_id_pattern = r'/book/(\d+)'
-            found_book_ids = re.findall(book_id_pattern, original_search_html)
-            if found_book_ids:
+        
+        # Ищем /book/ID в оригинальном HTML
+        book_id_pattern = r'/book/(\d+)'
+        found_book_ids = re.findall(book_id_pattern, original_search_html)
+        
+        # Также ищем в AJAX-контенте (если был загружен)
+        if ajax_tried and html_content and html_content != original_search_html:
+            ajax_book_ids = re.findall(book_id_pattern, html_content)
+            found_book_ids.extend(ajax_book_ids)
+            print(f"[DEBUG] RMЭБ: найдено {len(ajax_book_ids)} book ID в AJAX ответе")
+        
+        if found_book_ids:
+            print(f"[DEBUG] RMЭБ: найдены упоминания /book/ в HTML, извлекаем все ID")
                 # Убираем дубли, сохраняя порядок
                 unique_book_ids = []
                 seen_ids = set()
