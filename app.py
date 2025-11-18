@@ -432,22 +432,16 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             except Exception as e:
                 print(f"[DEBUG] RMЭБ: ошибка при попытке AJAX: {e}")
 
-        # СНАЧАЛА: агрессивный поиск /book/ID во ВСЁМ оригинальном HTML (не AJAX)
-        # Это делаем ДО BeautifulSoup парсинга, чтобы вытащить ID даже если структура странная
-        original_search_html = search_response.text if search_response else ""
+        # СНАЧАЛА: агрессивный поиск /book/ID в AJAX-контенте (приоритет) и оригинальном HTML
+        # Используем html_content (который AJAX, если он был загружен)
+        search_content = html_content  # AJAX ответ имеет приоритет
         
-        # Ищем /book/ID в оригинальном HTML
+        # Ищем /book/ID в контенте
         book_id_pattern = r'/book/(\d+)'
-        found_book_ids = re.findall(book_id_pattern, original_search_html)
-        
-        # Также ищем в AJAX-контенте (если был загружен)
-        if ajax_tried and html_content and html_content != original_search_html:
-            ajax_book_ids = re.findall(book_id_pattern, html_content)
-            found_book_ids.extend(ajax_book_ids)
-            print(f"[DEBUG] RMЭБ: найдено {len(ajax_book_ids)} book ID в AJAX ответе")
+        found_book_ids = re.findall(book_id_pattern, search_content)
         
         if found_book_ids:
-            print(f"[DEBUG] RMЭБ: найдены упоминания /book/ в HTML, извлекаем все ID")
+            print(f"[DEBUG] RMЭБ: найдено {len(found_book_ids)} упоминаний /book/ в HTML/AJAX")
             # Убираем дубли, сохраняя порядок
             unique_book_ids = []
             seen_ids = set()
@@ -462,10 +456,12 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             for book_id in unique_book_ids[:max_results]:
                 book_url = urljoin(base_url_clean, f"/book/{book_id}")
                 
-                # Пытаемся найти название: ищем data-link="/book/{book_id}" и берём ближайший Title
+                # Пытаемся найти название: ищем перед /book/{book_id} ближайший <span class="Title">
                 title = subject  # По умолчанию - название предмета
-                title_pattern = rf'data-link=["\']?/book/{book_id}["\']?.*?<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>'
-                title_match = re.search(title_pattern, original_search_html, re.DOTALL | re.IGNORECASE)
+                
+                # Паттерн 1: ищем Title ПЕРЕД data-link="/book/ID" или href="/book/ID" (в пределах 2000 символов назад)
+                title_pattern = rf'<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>.{{0,2000}}?["\']?/book/{book_id}["\']?'
+                title_match = re.search(title_pattern, search_content, re.DOTALL | re.IGNORECASE)
                 if title_match:
                     raw_title = title_match.group(1)
                     # Убираем HTML теги (например <b style="...">)
@@ -473,16 +469,6 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                     if clean_title and len(clean_title) > 3:
                         title = clean_title
                         print(f"[DEBUG] RMЭБ: для ID {book_id} найдено название: {title[:80]}")
-                else:
-                    # Альтернатива: ищем Title рядом с /book/{book_id} (в пределах 2000 символов)
-                    context_pattern = rf'/book/{book_id}.{{0,2000}}?<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>'
-                    context_match = re.search(context_pattern, original_search_html, re.DOTALL | re.IGNORECASE)
-                    if context_match:
-                        raw_title = context_match.group(1)
-                        clean_title = re.sub(r'<[^>]+>', '', raw_title).strip()
-                        if clean_title and len(clean_title) > 3:
-                            title = clean_title
-                            print(f"[DEBUG] RMЭБ: для ID {book_id} найдено название (по контексту): {title[:80]}")
                 
                 results.append({
                     "title": title,
