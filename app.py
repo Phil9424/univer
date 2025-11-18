@@ -432,9 +432,11 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             except Exception as e:
                 print(f"[DEBUG] RMЭБ: ошибка при попытке AJAX: {e}")
 
-        # СНАЧАЛА: агрессивный поиск /book/ID в AJAX-контенте (приоритет) и оригинальном HTML
-        # Используем html_content (который AJAX, если он был загружен)
-        search_content = html_content  # AJAX ответ имеет приоритет
+        # СНАЧАЛА: агрессивный поиск /book/ID в ОРИГИНАЛЬНОМ HTML (не AJAX!)
+        # AJAX endpoint /test/listinlist возвращает урезанную версию БЕЗ data-link
+        # Используем оригинальный search_response.text, где ЕСТЬ data-link="/book/ID"
+        original_html = search_response.text if search_response else ""
+        search_content = original_html  # Приоритет - оригинальная страница, не AJAX
         
         # Ищем /book/ID в контенте
         book_id_pattern = r'/book/(\d+)'
