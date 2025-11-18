@@ -440,6 +440,12 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         book_id_pattern = r'/book/(\d+)'
         found_book_ids = re.findall(book_id_pattern, search_content)
         
+        print(f"[DEBUG] RMЭБ: поиск /book/ в контенте, длина: {len(search_content)}, найдено: {len(found_book_ids)}")
+        if '/book/' in search_content:
+            print(f"[DEBUG] RMЭБ: строка '/book/' ЕСТЬ в контенте")
+        else:
+            print(f"[DEBUG] RMЭБ: строка '/book/' ОТСУТСТВУЕТ в контенте")
+        
         if found_book_ids:
             print(f"[DEBUG] RMЭБ: найдено {len(found_book_ids)} упоминаний /book/ в HTML/AJAX")
             # Убираем дубли, сохраняя порядок
