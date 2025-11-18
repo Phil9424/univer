@@ -448,54 +448,54 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
         
         if found_book_ids:
             print(f"[DEBUG] RMЭБ: найдены упоминания /book/ в HTML, извлекаем все ID")
-                # Убираем дубли, сохраняя порядок
-                unique_book_ids = []
-                seen_ids = set()
-                for book_id in found_book_ids:
-                    if book_id not in seen_ids:
-                        unique_book_ids.append(book_id)
-                        seen_ids.add(book_id)
+            # Убираем дубли, сохраняя порядок
+            unique_book_ids = []
+            seen_ids = set()
+            for book_id in found_book_ids:
+                if book_id not in seen_ids:
+                    unique_book_ids.append(book_id)
+                    seen_ids.add(book_id)
+            
+            print(f"[DEBUG] RMЭБ: найдено {len(unique_book_ids)} уникальных book ID: {unique_book_ids[:10]}")
+            
+            # Создаем результаты из найденных ID
+            for book_id in unique_book_ids[:max_results]:
+                book_url = urljoin(base_url_clean, f"/book/{book_id}")
                 
-                print(f"[DEBUG] RMЭБ: найдено {len(unique_book_ids)} уникальных book ID: {unique_book_ids[:10]}")
-                
-                # Создаем результаты из найденных ID
-                for book_id in unique_book_ids[:max_results]:
-                    book_url = urljoin(base_url_clean, f"/book/{book_id}")
-                    
-                    # Пытаемся найти название: ищем data-link="/book/{book_id}" и берём ближайший Title
-                    title = subject  # По умолчанию - название предмета
-                    title_pattern = rf'data-link=["\']?/book/{book_id}["\']?.*?<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>'
-                    title_match = re.search(title_pattern, original_search_html, re.DOTALL | re.IGNORECASE)
-                    if title_match:
-                        raw_title = title_match.group(1)
-                        # Убираем HTML теги (например <b style="...">)
+                # Пытаемся найти название: ищем data-link="/book/{book_id}" и берём ближайший Title
+                title = subject  # По умолчанию - название предмета
+                title_pattern = rf'data-link=["\']?/book/{book_id}["\']?.*?<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>'
+                title_match = re.search(title_pattern, original_search_html, re.DOTALL | re.IGNORECASE)
+                if title_match:
+                    raw_title = title_match.group(1)
+                    # Убираем HTML теги (например <b style="...">)
+                    clean_title = re.sub(r'<[^>]+>', '', raw_title).strip()
+                    if clean_title and len(clean_title) > 3:
+                        title = clean_title
+                        print(f"[DEBUG] RMЭБ: для ID {book_id} найдено название: {title[:80]}")
+                else:
+                    # Альтернатива: ищем Title рядом с /book/{book_id} (в пределах 2000 символов)
+                    context_pattern = rf'/book/{book_id}.{{0,2000}}?<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>'
+                    context_match = re.search(context_pattern, original_search_html, re.DOTALL | re.IGNORECASE)
+                    if context_match:
+                        raw_title = context_match.group(1)
                         clean_title = re.sub(r'<[^>]+>', '', raw_title).strip()
                         if clean_title and len(clean_title) > 3:
                             title = clean_title
-                            print(f"[DEBUG] RMЭБ: для ID {book_id} найдено название: {title[:80]}")
-                    else:
-                        # Альтернатива: ищем Title рядом с /book/{book_id} (в пределах 2000 символов)
-                        context_pattern = rf'/book/{book_id}.{{0,2000}}?<span[^>]*class=["\']Title["\'][^>]*>(.*?)</span>'
-                        context_match = re.search(context_pattern, original_search_html, re.DOTALL | re.IGNORECASE)
-                        if context_match:
-                            raw_title = context_match.group(1)
-                            clean_title = re.sub(r'<[^>]+>', '', raw_title).strip()
-                            if clean_title and len(clean_title) > 3:
-                                title = clean_title
-                                print(f"[DEBUG] RMЭБ: для ID {book_id} найдено название (по контексту): {title[:80]}")
-                    
-                    results.append({
-                        "title": title,
-                        "url": book_url,
-                        "status": "success",
-                        "note": "Республиканская Межвузовская Электронная Библиотека",
-                        "source": "rmebrk",
-                    })
-                    print(f"[DEBUG] RMЭБ: добавлена книга {book_url}")
+                            print(f"[DEBUG] RMЭБ: для ID {book_id} найдено название (по контексту): {title[:80]}")
                 
-                if results:
-                    print(f"[DEBUG] RMЭБ: агрессивный поиск нашёл {len(results)} результатов, возвращаем")
-                    return results
+                results.append({
+                    "title": title,
+                    "url": book_url,
+                    "status": "success",
+                    "note": "Республиканская Межвузовская Электронная Библиотека",
+                    "source": "rmebrk",
+                })
+                print(f"[DEBUG] RMЭБ: добавлена книга {book_url}")
+            
+            if results:
+                print(f"[DEBUG] RMЭБ: агрессивный поиск нашёл {len(results)} результатов, возвращаем")
+                return results
 
         # Парсим страницу результатов (используем html_content, который может быть из AJAX)
         result_soup = BeautifulSoup(html_content, 'html.parser')
