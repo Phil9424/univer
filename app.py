@@ -445,6 +445,8 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             print(f"[DEBUG] RMЭБ: строка '/book/' ЕСТЬ в контенте")
         else:
             print(f"[DEBUG] RMЭБ: строка '/book/' ОТСУТСТВУЕТ в контенте")
+            # Сохраняем первые 5000 символов для диагностики
+            print(f"[DEBUG] RMЭБ: первые 5000 символов AJAX-ответа:\n{search_content[:5000]}")
         
         if found_book_ids:
             print(f"[DEBUG] RMЭБ: найдено {len(found_book_ids)} упоминаний /book/ в HTML/AJAX")
