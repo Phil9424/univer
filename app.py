@@ -451,8 +451,9 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             # Попытка: ищем в исходной странице data-id в элементе search-items (кнопка "Описание")
             # и строим /book/{data-id}
             print(f"[DEBUG] RMЭБ: ищем data-id в <li class='search-items'> элементах")
-            data_id_pattern = r'<li[^>]*class=["\']search-items["\'][^>]*data-id=["\'](\d+)["\']'
-            found_data_ids = re.findall(data_id_pattern, search_content, re.IGNORECASE)
+            # Используем re.DOTALL чтобы . захватывал переносы строк
+            data_id_pattern = r'<li[^>]*class=["\']search-items["\'].*?data-id=["\'](\d+)["\']'
+            found_data_ids = re.findall(data_id_pattern, search_content, re.IGNORECASE | re.DOTALL)
             if found_data_ids:
                 print(f"[DEBUG] RMЭБ: найдено {len(found_data_ids)} data-id в search-items: {found_data_ids[:10]}")
                 # Используем найденные data-id как book ID
