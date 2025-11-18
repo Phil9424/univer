@@ -470,15 +470,21 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                 # Используем найденные data-id как book ID
                 found_book_ids = found_data_ids
         
-        # Если ничего не нашли - пробуем Playwright (data-id генерируется JavaScript на клиенте)
+        # Если ничего не нашли - data-id генерируется JavaScript на клиенте
+        # Пробуем Playwright (работает на Render, но не на Vercel)
         if not found_book_ids:
-            print(f"[DEBUG] RMЭБ: data-id генерируется JavaScript, пробуем Playwright")
-            try:
-                playwright_results = search_rmebrk_results_playwright(subject, max_results, base_url_clean)
-                if playwright_results:
-                    return playwright_results
-            except Exception as e:
-                print(f"[DEBUG] RMЭБ: ошибка Playwright: {e}")
+            print(f"[DEBUG] RMЭБ: data-id генерируется JavaScript (требуется браузер)")
+            if PLAYWRIGHT_AVAILABLE:
+                print(f"[DEBUG] RMЭБ: запускаем Playwright для получения прямых ссылок")
+                try:
+                    playwright_results = search_rmebrk_results_playwright(subject, max_results)
+                    if playwright_results:
+                        return playwright_results
+                except Exception as e:
+                    print(f"[DEBUG] RMЭБ: ошибка Playwright: {e}")
+            else:
+                print(f"[DEBUG] RMЭБ: Playwright недоступен, возвращаем пустой результат")
+            return []  # Возвращаем пустой результат, если Playwright не помог
         
         if found_book_ids:
             print(f"[DEBUG] RMЭБ: найдено {len(found_book_ids)} упоминаний /book/ в HTML/AJAX")
@@ -1342,7 +1348,11 @@ def search_rmebrk_results_playwright(subject: str, max_results: int = 10) -> Lis
 
         with lock:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                # Запуск браузера с флагами для Render/Docker
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                )
                 context = browser.new_context()
                 page = context.new_page()
                 page.set_default_timeout(15000)
@@ -2804,4 +2814,6 @@ def process_excel_file(ws, pending_subjects, link_results, start_row):
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    # Для локальной разработки и Render
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
