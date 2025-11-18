@@ -434,9 +434,13 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
 
         # СНАЧАЛА: агрессивный поиск /book/ID в ОРИГИНАЛЬНОМ HTML (не AJAX!)
         # AJAX endpoint /test/listinlist возвращает урезанную версию БЕЗ data-link
-        # Используем оригинальный search_response.text, где ЕСТЬ data-link="/book/ID"
+        # Используем оригинальный search_response.text, где МОЖЕТ БЫТЬ data-id (генерируется на сервере)
         original_html = search_response.text if search_response else ""
         search_content = original_html  # Приоритет - оригинальная страница, не AJAX
+        
+        # ВАЖНО: если data-id НЕТ в original_html, значит он генерируется JavaScript
+        # На Vercel Playwright недоступен, поэтому возвращаем пустой результат
+        # (иначе будет зацикливание на Playwright)
         
         # Ищем /book/ID в контенте
         book_id_pattern = r'/book/(\d+)'
@@ -451,6 +455,13 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
             # Попытка: ищем в исходной странице data-id в элементе search-items (кнопка "Описание")
             # и строим /book/{data-id}
             print(f"[DEBUG] RMЭБ: ищем data-id в <li class='search-items'> элементах")
+            
+            # Отладка: выводим ВСЕ вхождения "search-items" (первые 5)
+            all_search_items = re.findall(r'<li[^>]{0,500}?search-items[^>]{0,500}?>', search_content, re.IGNORECASE | re.DOTALL)
+            print(f"[DEBUG] RMЭБ: найдено {len(all_search_items)} элементов search-items")
+            for i, item in enumerate(all_search_items[:3]):
+                print(f"[DEBUG] RMЭБ: search-items {i+1}: {item[:300]}")
+            
             # Используем re.DOTALL чтобы . захватывал переносы строк
             data_id_pattern = r'<li[^>]*class=["\']search-items["\'].*?data-id=["\'](\d+)["\']'
             found_data_ids = re.findall(data_id_pattern, search_content, re.IGNORECASE | re.DOTALL)
@@ -458,6 +469,16 @@ def search_rmebrk_results(subject: str, max_results: int = 10) -> List[Dict[str,
                 print(f"[DEBUG] RMЭБ: найдено {len(found_data_ids)} data-id в search-items: {found_data_ids[:10]}")
                 # Используем найденные data-id как book ID
                 found_book_ids = found_data_ids
+        
+        # Если ничего не нашли - пробуем Playwright (data-id генерируется JavaScript на клиенте)
+        if not found_book_ids:
+            print(f"[DEBUG] RMЭБ: data-id генерируется JavaScript, пробуем Playwright")
+            try:
+                playwright_results = search_rmebrk_results_playwright(subject, max_results, base_url_clean)
+                if playwright_results:
+                    return playwright_results
+            except Exception as e:
+                print(f"[DEBUG] RMЭБ: ошибка Playwright: {e}")
         
         if found_book_ids:
             print(f"[DEBUG] RMЭБ: найдено {len(found_book_ids)} упоминаний /book/ в HTML/AJAX")
